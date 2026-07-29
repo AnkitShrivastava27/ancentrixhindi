@@ -1,0 +1,58 @@
+.page { max-width: 1400px; align-items: center; margin: 0 auto; padding: 24px 16px; }
+.head { margin-bottom: 20px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.loadingWrap { display: flex; justify-content: center; padding-top: 80px; }
+
+.welcomeBanner {
+  padding: 12px 16px; border-radius: 10px;
+  background: var(--accent-soft); border: 1px solid rgba(200,202,210,0.2);
+  color: #d9dbe1; font-size: 13px; margin-bottom: 16px;
+}
+
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 14px; margin-top: 16px; }
+.cardHead { padding: 12px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; font-weight: 500; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+.cardBody { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.langToggle { display: flex; gap: 6; margin-bottom: 4px; gap: 6px; }
+.langBtn {
+  padding: 4px 12px; border-radius: 20px; font-size: 11px; cursor: pointer; font-family: inherit;
+  border: 1px solid var(--border); background: transparent; color: var(--text3);
+}
+.langBtnActive { border: 1px solid rgba(200,202,210,0.5); background: var(--accent-soft); color: #e8e9ee; }
+
+.hoursLabel { font-size: 11px; font-weight: 500; color: #4a4d5e; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px; }
+.hoursList { display: flex; flex-direction: column; gap: 6px; }
+.hoursRow { display: flex; align-items: center; gap: 12px; }
+.hoursDay { font-size: 12px; color: var(--text2); width: 90px; flex-shrink: 0; }
+.hoursInput {
+  flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 10px; font-size: 12px; color: var(--text); outline: none; font-family: inherit;
+}
+.hoursInput:focus { border-color: var(--accent); }
+
+.smallNote { font-size: 11px; color: var(--text3); margin: -6px 0 4px; }
+.subLabel { font-size: 11px; font-weight: 500; color: #4a4d5e; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; }
+.subLabelSpaced { font-size: 11px; font-weight: 500; color: #4a4d5e; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 8px; }
+
+.helperText { font-size: 12px; color: var(--text3); margin: 0; }
+
+.productCard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 14px; }
+.productHead { padding: 12px 18px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; }
+.productHeadTitle { font-size: 12px; font-weight: 500; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+.productRemoveBtn { padding: 3px 10px; border-radius: 6px; background: rgba(242,87,87,0.1); border: 1px solid rgba(242,87,87,0.2); color: var(--red); font-size: 11px; cursor: pointer; font-family: inherit; }
+.productBody { padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+
+.priceReadLabel { font-size: 11px; color: var(--text2); margin-bottom: 4px; }
+.priceReadValue { font-size: 13px; color: var(--text3); padding: 8px 0; }
+
+.addProductBtn { padding: 8px 18px; border-radius: var(--radius-sm); background: transparent; border: 1px solid var(--border-2); color: var(--text2); font-size: 13px; cursor: pointer; font-family: inherit; }
+
+.infoBox { background: rgba(200,202,210,0.05); border: 1px solid rgba(200,202,210,0.15); border-radius: var(--radius-sm); padding: 10px 14px; }
+.infoBoxTitle { font-size: 11px; font-weight: 500; color: #d9dbe1; margin-bottom: 4px; }
+.infoBoxText { font-size: 12px; color: var(--text2); }
+
+.footerRow { display: flex; justify-content: flex-end; padding-top: 8px; padding-bottom: 32px; }

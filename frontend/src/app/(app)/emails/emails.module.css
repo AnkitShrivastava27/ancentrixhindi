@@ -1,0 +1,82 @@
+.page { max-width: 1060px; }
+.head { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.pollBtn {
+  display: flex; align-items: center; gap: 7px; padding: 7px 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-2); background: transparent; color: var(--text2);
+  font-size: 13px; cursor: pointer; font-family: inherit;
+}
+.pollBtnDisabled { opacity: 0.5; }
+
+.statsRow { display: grid; grid-template-columns: repeat(8,1fr); gap: 8px; margin-bottom: 20px; }
+.statTile { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; text-align: center; }
+.statTileWarn { border: 1px solid rgba(245,166,35,0.3); }
+.statTileLabel { font-size: 10px; font-weight: 600; color: #3a3d4e; text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
+.statTileValue { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+
+.filterRow { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+.filterGroup { margin-left: auto; display: flex; gap: 8px; }
+.filterSelect {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 7px 12px; font-size: 12px; outline: none; cursor: pointer; font-family: inherit;
+}
+
+.tablePanel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
+.gridCols { display: grid; grid-template-columns: 1.2fr 160px 90px 70px 140px 50px 80px; }
+.tableHead { padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.tableHeadCell { font-size: 10px; font-weight: 600; color: #3a3d4e; text-transform: uppercase; letter-spacing: 0.08em; }
+.centerPad { display: flex; justify-content: center; padding: 48px; }
+
+.row { align-items: center; padding: 10px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); cursor: pointer; transition: background 0.12s; background: transparent; }
+.row:hover { background: var(--hover); }
+.rowLast { align-items: center; padding: 10px 16px; border-bottom: none; cursor: pointer; transition: background 0.12s; }
+.rowLast:hover { background: var(--hover); }
+
+.toCell { min-width: 0; }
+.toName { font-size: 13px; font-weight: 500; color: #e8eaf0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toEmail { font-size: 11px; color: #4a4d5e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subjectCell { font-size: 12px; color: #6a6d7e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusPill { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
+.dateCell { font-size: 11px; color: #4a4d5e; }
+.replyStatusCell { font-size: 12px; font-weight: 500; }
+.moodCell { font-size: 16px; }
+
+.reviewBtn { padding: 4px 10px; border-radius: 6px; background: var(--amber); border: none; color: #000; font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.replyBtn { padding: 4px 10px; border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-2); color: var(--text2); font-size: 11px; cursor: pointer; font-family: inherit; }
+
+/* Modal */
+.detailStack { display: flex; flex-direction: column; gap: 16px; }
+.metaBox { background: var(--surface); border-radius: 8px; padding: 12px 14px; display: flex; justify-content: space-between; align-items: flex-start; }
+.metaName { font-size: 13px; font-weight: 500; color: #e8eaf0; }
+.metaEmail { color: #4a4d5e; font-weight: 400; }
+.metaSubject { font-size: 12px; color: var(--text3); margin-top: 3px; }
+.metaMoodRow { display: flex; gap: 12px; margin-top: 6px; font-size: 11px; }
+.metaMood { color: var(--text3); }
+.metaIntent { color: #d9dbe1; }
+.metaStatusPill { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
+
+.thread { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; }
+.threadRowAi { display: flex; justify-content: flex-end; }
+.threadRowLead { display: flex; justify-content: flex-start; }
+.bubble { max-width: 80%; padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; color: #e8eaf0; }
+.bubbleAi { background: rgba(62,207,142,0.07); border: 1px solid rgba(62,207,142,0.15); }
+.bubbleLead { background: rgba(77,166,255,0.07); border: 1px solid rgba(77,166,255,0.12); }
+.bubbleRole { font-size: 10px; color: #4a4d5e; margin-bottom: 6px; }
+
+.confidenceRow { display: flex; align-items: center; gap: 8px; }
+.confidenceLabel { font-size: 11px; color: #4a4d5e; white-space: nowrap; }
+.confidenceTrack { flex: 1; height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+.confidenceFill { height: 100%; border-radius: 2px; }
+.confidenceValue { font-size: 11px; font-family: monospace; }
+
+.editorLabel { font-size: 11px; font-weight: 500; color: #4a4d5e; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+.editorTextarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 10px 12px; font-size: 13px; color: var(--text); outline: none; resize: vertical;
+  font-family: inherit; line-height: 1.5;
+}
+.editorTextarea:focus { border-color: var(--accent); }
+
+.modalFooterActions { display: flex; gap: 8px; }

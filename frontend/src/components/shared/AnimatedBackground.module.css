@@ -1,0 +1,85 @@
+.wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg);
+}
+
+/* soft drifting graphite/silver glow blobs, shared by both variants */
+.blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  animation: driftGlow 16s ease-in-out infinite;
+}
+.blobA {
+  width: 52vw;
+  height: 52vw;
+  top: -16%;
+  left: -12%;
+  background: radial-gradient(circle, rgba(210,212,220,0.16) 0%, transparent 70%);
+}
+.blobB {
+  width: 46vw;
+  height: 46vw;
+  bottom: -18%;
+  right: -10%;
+  background: radial-gradient(circle, rgba(180,182,190,0.12) 0%, transparent 70%);
+  animation-delay: -6s;
+}
+.blobC {
+  width: 30vw;
+  height: 30vw;
+  top: 40%;
+  left: 50%;
+  background: radial-gradient(circle, rgba(62,207,142,0.05) 0%, transparent 70%);
+  animation-delay: -11s;
+}
+
+/* ---------- SUBTLE variant (ambient, behind every app screen) ---------- */
+/* A wide glow band anchored to the top edge of the viewport, so it reads
+   as a consistent brand watermark no matter how wide the page content is. */
+.subtleBand {
+  position: absolute;
+  top: -220px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1100px;
+  height: 480px;
+  opacity: 0.8;
+}
+.subtleGlow {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 640px;
+  height: 640px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(210,212,220,0.14) 0%, transparent 70%);
+  filter: blur(10px);
+}
+.subtleOrbStage {
+  position: absolute;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 220px;
+  height: 220px;
+}
+.subtleRing {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  border-radius: 50%;
+  border: 1px solid rgba(210,212,220,0.35);
+  animation: ringPulse 4.5s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+}
+.subtleRing1 { width: 90px; height: 90px; }
+.subtleRing2 { width: 90px; height: 90px; animation-delay: 1.5s; }
+.subtleRing3 { width: 90px; height: 90px; animation-delay: 3s; }
+
+@media (max-width: 640px) {
+  .subtleBand { width: 100vw; }
+}

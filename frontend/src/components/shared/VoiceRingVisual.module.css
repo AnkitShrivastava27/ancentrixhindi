@@ -1,0 +1,65 @@
+/* Mirrors the reference site's hero-visual markup:
+   voice-ring-container > voice-ring ×4 + voice-core + waveform > wave-bar ×7
+   Sized to sit as a normal flex/grid child — never absolutely positioned
+   over other content, so it can't overlap text or cards. */
+
+.voiceRingContainer {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.voiceRing {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 70%;
+  height: 70%;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent-glow);
+  animation: voiceRingPulse 3s cubic-bezier(0.2, 0.65, 0.4, 1) infinite;
+}
+
+.voiceCore {
+  position: relative;
+  z-index: 1;
+  width: 60%;
+  height: 60%;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--accent-2), var(--accent) 55%, #303138 100%);
+  box-shadow: 0 0 50px rgba(220,222,230,0.55), 0 0 0 1px rgba(255,255,255,0.1) inset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32%;
+}
+
+.waveBar {
+  width: 10%;
+  min-width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: #0a0a0b;
+  opacity: 0.85;
+  transform-origin: center;
+  animation: voiceWaveBar 1.1s ease-in-out infinite;
+}
+
+@keyframes voiceRingPulse {
+  0%   { transform: scale(0.7);  opacity: 0.6; }
+  70%  { opacity: 0; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+
+@keyframes voiceWaveBar {
+  0%, 100% { transform: scaleY(0.25); }
+  50%      { transform: scaleY(1); }
+}

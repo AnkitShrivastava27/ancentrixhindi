@@ -1,0 +1,67 @@
+.page { max-width: 1600px; align-items: center; margin: 0 auto; padding: 24px 16px; }
+.head { margin-bottom: 24px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.dropZone {
+  border-radius: var(--radius-md);
+  border: 2px dashed var(--border);
+  background: var(--card);
+  padding: 36px 24px;
+  text-align: center;
+  margin-bottom: 20px;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.dropZoneActive { border-color: var(--accent); background: var(--accent-soft); }
+
+.dropInner { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.dropIcon { font-size: 32px; opacity: 0.3; }
+.dropTitle { font-size: 14px; font-weight: 500; color: var(--text2); }
+.dropSub { font-size: 12px; color: var(--text3); }
+.uploadingText { font-size: 13px; color: var(--text2); margin: 0; }
+.browseLabel { cursor: pointer; }
+.browseBtn { font-size: 12px; padding: 6px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-2); color: var(--text2); cursor: pointer; }
+
+.panel {
+  background: linear-gradient(145deg, #1a1a1c 0%, #202024 45%, #2c2c30 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.panelHead { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: space-between; }
+.panelHeadText { font-size: 12px; font-weight: 500; color: var(--text2); text-transform: uppercase; letter-spacing: 0.06em; }
+.centerPad { display: flex; justify-content: center; padding: 40px; }
+
+.docRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  transition: background 0.12s;
+  background: transparent;
+}
+.docRow:hover { background: var(--hover); }
+.docRowLast {
+  display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+  border-bottom: none; transition: background 0.12s;
+}
+.docRowLast:hover { background: var(--hover); }
+
+.docIcon { width: 36px; height: 36px; border-radius: 8px; background: rgba(255,255,255,0.04); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.docMeta { flex: 1; min-width: 0; }
+.docName { font-size: 13px; font-weight: 500; color: #e8eaf0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.docSubRow { display: flex; gap: 10px; margin-top: 3px; }
+.docSub { font-size: 11px; color: var(--text3); }
+.docActions { display: flex; align-items: center; gap: 8px; }
+.statusPill { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }
+.deleteBtn { width: 26px; height: 26px; border-radius: 6px; background: transparent; border: none; cursor: pointer; color: #3a3d4e; font-size: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.12s; }
+.deleteBtn:hover { background: rgba(242,87,87,0.1); color: var(--red); }
+
+.tipsGrid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-top: 16px; }
+.tipCard { background: var(--card); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 12px 14px; }
+.tipIcon { font-size: 20px; margin-bottom: 8px; color: var(--text3); }
+.tipTitle { font-size: 12px; font-weight: 500; color: var(--text2); margin-bottom: 4px; }
+.tipDesc { font-size: 11px; color: var(--text3); line-height: 1.4; }

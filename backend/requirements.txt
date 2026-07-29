@@ -1,0 +1,93 @@
+# ── STT — Deepgram ────────────────────────────────────────────────────────────
+websockets>=13.1,<14      # bumped from ==12.0 — pipecat-ai 1.x requires websockets>=13.1; our own raw Deepgram STT client (websockets==12.0 API) still works fine on 13.x
+# deepgram-sdk==3.7.7    # Optional official SDK — we use raw websockets above
+
+
+fastapi>=0.115.6,<1        # bumped from 0.115.0 — pipecat-ai[websocket] requires >=0.115.6
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy[asyncio]==2.0.36
+aiosqlite==0.20.0          # SQLite async driver (local dev)
+asyncpg==0.30.0            # PostgreSQL async driver (VPS production)
+alembic==1.14.0
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+cryptography==43.0.3       # Fernet field-level encryption for Company.vobiz_auth_id/vobiz_auth_token (app/core/crypto.py)
+bcrypt==4.0.1               # passlib 1.7.4 (unmaintained since 2020) reads bcrypt.__about__.__version__,
+                             # which bcrypt>=4.1 removed. That breaks passlib's password-length check and
+                             # makes EVERY password fail with "password cannot be longer than 72 bytes",
+                             # regardless of actual length. 4.0.1 is the last version before that removal.
+pydantic[email]>=2.10.6,<3   # was pinned to exactly 2.10.0 — pipecat-ai 1.x requires >=2.10.6, pip's resolver can't satisfy both an exact old pin and that floor
+pydantic-settings==2.6.1
+
+# ── LLM ───────────────────────────────────────────────────────────────────────
+# Bumped from 0.12.0 -> 0.23.0: pipecat-ai[groq] below hard-requires
+# groq>=0.23.0,<2. Pinning both packages against incompatible groq ranges
+# makes pip's resolver fail the whole install (or, if it doesn't fail,
+# leaves a broken groq client) — this was one of two hard blockers behind
+# the streaming pipeline crashing immediately after every call connected.
+groq==0.23.0                # Primary: llama-3.3-70b-versatile
+httpx==0.28.0
+
+# ── Streaming call pipeline (Pipecat) ──────────────────────────────────────────
+# UPDATED after reviewing Vobiz's own official reference integration
+# (Vobiz-X-Pipecat repo): Vobiz publishes a maintained PyPI package,
+# pipecat-vobiz, with a correct VobizFrameSerializer + parse_vobiz_start()
+# helper built against pipecat-ai 1.x's current API. That replaces the
+# hand-rolled serializer this app had, which — independent of any version
+# pinning — sent outbound audio as {"event": "media", ...}. Vobiz's actual
+# protocol expects {"event": "playAudio", ...} for outbound audio and
+# {"event": "clearAudio", ...} for barge-in; "media"/"clear" are simply not
+# recognized, so even a perfectly-importable old build would have connected
+# successfully and then sent audio Vobiz silently ignored. Confirmed against
+# pipecat-vobiz's actual source, not docs alone.
+#
+# app/services/telephony/vobiz_stream_pipeline.py was rewritten to match:
+# pipecat-ai 1.x's LLMContext/LLMContextAggregatorPair API (the old
+# OpenAILLMContext + create_context_aggregator() pattern this app used
+# before was removed in pipecat-ai 1.0.0) plus pipecat-vobiz's serializer.
+pipecat-ai[anthropic,deepgram,groq,openai,sarvam,silero,websocket]>=1.2.0,<2
+pipecat-vobiz>=0.0.3,<0.1
+
+# ── TTS ───────────────────────────────────────────────────────────────────────
+gTTS==2.5.3                # Fallback TTS (Vobiz native is primary during calls)
+
+# ── RAG / Vector DB ───────────────────────────────────────────────────────────
+chromadb==0.5.20
+sentence-transformers==3.3.1
+
+# ── Document parsing ─────────────────────────────────────────────────────────
+pypdf==5.1.0
+python-docx==1.1.2
+
+# ── Email ─────────────────────────────────────────────────────────────────────
+sendgrid==6.11.0           # Send emails
+# IMAP: uses stdlib imaplib — no extra package needed
+
+# ── Background tasks ──────────────────────────────────────────────────────────
+celery[redis]==5.4.0
+redis==5.2.0
+
+# ── Timezone ──────────────────────────────────────────────────────────────────
+pytz==2024.1
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+aiofiles==24.1.0
+
+# ── Dev / Testing ─────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.24.0
+
+python-dateutil==2.9.0
+
+# ── Azure single-container deployment (Dockerfile.azure) ──────────────────────
+# Runs redis-server + uvicorn + celery worker + celery beat as one
+# supervisord-managed container, matching how the single-user version of
+# this app is already deployed to Azure App Service. Unused by the VM
+# deployment path (Dockerfile/docker-compose.yml), but harmless there.
+supervisor==4.2.5

@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap');
+
+/* ============================================================
+   ANCENTRIX DESIGN SYSTEM
+   Unified dark, black/graphite/silver theme shared by every screen.
+   Palette references https://ancentrix.com/p/ai-voice-agent.html
+   ============================================================ */
+:root {
+  /* Background palette — true black + graphite, like the
+     Ancentrix marketing site's dark dashboard preview */
+  --bg:        #050505;
+  --bg-elev:   #0a0a0b;
+  --surface:   #17181b;
+  --card:      #1c1d21;
+  --hover:     #26272c;
+  --border:    rgba(255,255,255,0.08);
+  --border-2:  rgba(255,255,255,0.16);
+
+  /* Text */
+  --text:      #f5f5f7;
+  --text2:     #9a9ba3;
+  --text3:     #5c5d66;
+
+  /* Accent — brushed silver/graphite, plus supporting signal colors */
+  --accent:       #c5c8d0;
+  --accent-2:     #eceef2;
+  --accent-soft:  rgba(200,202,210,0.14);
+  --accent-glow:  rgba(220,222,230,0.55);
+  --green:     #3ecf8e;
+  --blue:      #4da6ff;
+  --amber:     #f5a623;
+  --red:       #f25757;
+
+  /* Elevation / radius tokens used across modules */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 8px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+  --shadow-pop:  0 20px 60px rgba(0,0,0,0.65);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.02em; }
+
+a { color: inherit; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+
+/* ---------- shared animation keyframes ---------- */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Voice-agent ambient pulse rings (login hero + app background) */
+@keyframes ringPulse {
+  0%   { transform: scale(0.85); opacity: 0.55; }
+  70%  { opacity: 0; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* Sound waveform bars */
+@keyframes waveBar {
+  0%, 100% { transform: scaleY(0.25); }
+  50%      { transform: scaleY(1); }
+}
+
+/* Slow ambient drift for background glow blobs */
+@keyframes driftGlow {
+  0%   { transform: translate(0, 0) scale(1); }
+  50%  { transform: translate(2%, -3%) scale(1.06); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+.u-fadeUp { animation: fadeUp 0.35s ease both; }

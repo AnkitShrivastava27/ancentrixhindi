@@ -1,0 +1,504 @@
+# AI Call Center v5 — Complete Setup & Deploy Guide
+# Windows 11 Local Dev → Ubuntu VPS Production
+
+═══════════════════════════════════════════════════════════════════
+PART 1: LOCAL DEVELOPMENT (Windows 11)
+═══════════════════════════════════════════════════════════════════
+
+──────────────────────────────────────────────────────────────────
+STEP 1 — Install Prerequisites (one time only)
+──────────────────────────────────────────────────────────────────
+
+1a. Install Python 3.11
+    → https://python.org/downloads
+    → Check "Add Python to PATH" during install
+    → Verify: open CMD → python --version
+
+1b. Install Node.js 20+
+    → https://nodejs.org (LTS version)
+    → Verify: node --version
+
+1c. Install Git
+    → https://git-scm.com/download/win
+
+1d. Install Redis for Windows
+    → https://github.com/tporadowski/redis/releases
+    → Download Redis-x64-xxx.msi → install
+    → Redis starts as a Windows service automatically
+    → Verify: open CMD → redis-cli ping  (should say PONG)
+
+    OR use Docker Desktop instead:
+    → https://docker.com/products/docker-desktop
+    → Then: docker run -d -p 6379:6379 --name redis redis:alpine
+
+1e. Install ngrok (exposes localhost to Telnyx)
+    → https://ngrok.com/download
+    → Unzip ngrok.exe → put in C:\ngrok\ → add to PATH
+    → Sign up free at ngrok.com → get your authtoken
+    → CMD: ngrok config add-authtoken YOUR_TOKEN
+
+
+──────────────────────────────────────────────────────────────────
+STEP 2 — Get Your API Keys
+──────────────────────────────────────────────────────────────────
+
+2a. Groq API Key (FREE — takes 2 minutes)
+    → https://console.groq.com
+    → Sign up → API Keys → Create new key
+    → Copy: gsk_xxxxxxxxxxxxxxxxxxxx
+
+2b. Telnyx Setup
+    → https://portal.telnyx.com
+
+    i.  Buy a phone number:
+        Left menu → Numbers → Search & Buy Numbers
+        → Search India (+91) or any country
+        → Buy one (~$1-2/month)
+
+    ii. Create Call Control Application:
+        Left menu → Voice → Applications → + Add App
+        → Name: "AI Call Center"
+        → Type: Call Control
+        → Webhook URL: (leave blank for now — fill after ngrok)
+        → Webhook API Version: API v2
+        → Save → copy the Application ID (your TELNYX_CONNECTION_ID)
+
+    iii. Link number to app:
+        Left menu → Numbers → My Numbers → click your number
+        → Voice Settings → assign to your Call Control App
+        → Save
+
+    iv. Get API Key:
+        Left menu → Auth → API Keys → + Create API Key
+        → Copy immediately (starts with KEY01...)
+
+    v.  Complete Level 2 verification (raises concurrent call limit to 10):
+        Top right → Account → Verification
+        → Upload ID + do phone verification
+
+2c. SendGrid (optional — only if using email)
+    → https://app.sendgrid.com → Sign up free
+    → Settings → API Keys → Create API Key → Full Access
+    → Domain Authentication: Authenticate your domain
+
+
+──────────────────────────────────────────────────────────────────
+STEP 3 — Project Setup
+──────────────────────────────────────────────────────────────────
+
+    Open PowerShell or CMD in project folder:
+
+    # Create Python virtual environment
+    python -m venv venv
+
+    # Activate it (Windows)
+    venv\Scripts\activate
+
+    # Install backend dependencies
+    cd backend
+    pip install -r requirements.txt
+
+    # Copy env template
+    copy .env.local.example .env.local
+    # Now open .env.local in Notepad and fill in your keys
+
+    # Install frontend dependencies
+    cd ..\frontend
+    npm install
+
+
+──────────────────────────────────────────────────────────────────
+STEP 4 — Configure Telnyx Webhook with ngrok
+──────────────────────────────────────────────────────────────────
+
+    # Terminal 1 — Start ngrok
+    ngrok http 8000
+
+    You'll see something like:
+    → Forwarding https://abc123.ngrok-free.app → localhost:8000
+
+    Copy that https URL.
+
+    # Update .env.local:
+    TELNYX_WEBHOOK_BASE_URL=https://abc123.ngrok-free.app
+
+    # Update Telnyx portal:
+    Voice → Applications → your app → Edit
+    → Webhook URL: https://abc123.ngrok-free.app/api/v1/telephony/webhook
+    → Save
+
+
+──────────────────────────────────────────────────────────────────
+STEP 5 — Run Everything (4 terminals)
+──────────────────────────────────────────────────────────────────
+
+    Terminal 1 — ngrok (keep running)
+    ngrok http 8000
+
+    Terminal 2 — Backend API
+    cd backend
+    venv\Scripts\activate
+    uvicorn app.main:app --reload --port 8000
+
+    Terminal 3 — Celery Worker
+    cd backend
+    venv\Scripts\activate
+    celery -A app.core.celery_app worker --loglevel=info -Q calls,email,documents,default -c 4
+
+    Terminal 4 — Celery Beat (scheduler)
+    cd backend
+    venv\Scripts\activate
+    celery -A app.core.celery_app beat --loglevel=info
+
+    Terminal 5 — Frontend
+    cd frontend
+    npm run dev
+
+    Open browser: http://localhost:3000
+    API docs:     http://localhost:8000/api/docs
+
+
+──────────────────────────────────────────────────────────────────
+STEP 6 — First Time Setup in the App
+──────────────────────────────────────────────────────────────────
+
+    1. Register at http://localhost:3000/login
+    2. Go to Settings → fill in:
+       - Company name, description, services
+       - Add your products (name, description, price, features)
+       - Set active product to pitch
+       - Agent name and voice settings
+       - Telnyx phone number (your DID)
+    3. Knowledge Base → upload your product PDFs, FAQs, etc.
+    4. Leads → import CSV or add manually
+    5. Create a Batch → attach a Schedule → watch it run
+
+
+═══════════════════════════════════════════════════════════════════
+PART 2: VPS DEPLOYMENT (Ubuntu 22.04)
+═══════════════════════════════════════════════════════════════════
+
+──────────────────────────────────────────────────────────────────
+STEP 1 — Get a VPS
+──────────────────────────────────────────────────────────────────
+
+    Recommended providers (cheapest first):
+    - Hetzner Cloud: CX21 (2 vCPU, 4GB RAM) = €4/month ← best value
+    - DigitalOcean:  2GB Droplet = $12/month
+    - AWS EC2:       t3.small = ~$15/month
+    - Vultr:         2GB = $12/month
+
+    Minimum spec for 10-20 simultaneous calls:
+    - 2 vCPU, 4GB RAM, 40GB SSD, Ubuntu 22.04 LTS
+
+    For 50+ simultaneous calls:
+    - 4 vCPU, 8GB RAM
+
+
+──────────────────────────────────────────────────────────────────
+STEP 2 — Initial Server Setup
+──────────────────────────────────────────────────────────────────
+
+    # SSH into your VPS
+    ssh root@YOUR_SERVER_IP
+
+    # Update system
+    apt update && apt upgrade -y
+
+    # Install dependencies
+    apt install -y python3.11 python3.11-venv python3-pip nginx redis-server certbot python3-certbot-nginx git curl
+
+    # Install Node.js 20
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt install -y nodejs
+
+    # Start Redis
+    systemctl enable redis-server
+    systemctl start redis-server
+
+    # Create app user (don't run as root)
+    useradd -m -s /bin/bash callcenter
+    su - callcenter
+
+
+──────────────────────────────────────────────────────────────────
+STEP 3 — Deploy Application
+──────────────────────────────────────────────────────────────────
+
+    # As callcenter user:
+    cd ~
+
+    # Clone or upload your project
+    git clone https://github.com/YOUR_USERNAME/ai-call-center.git
+    cd ai-call-center
+
+    # Backend setup
+    cd backend
+    python3.11 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+
+    # Create production .env
+    cp .env.local.example .env
+    nano .env   # fill in production values — see below
+
+    # Frontend build
+    cd ../frontend
+    npm install
+    npm run build    # creates .next/ folder
+
+
+──────────────────────────────────────────────────────────────────
+STEP 4 — Production .env differences from local
+──────────────────────────────────────────────────────────────────
+
+    # Change these from local values:
+    DEBUG=false
+    SECRET_KEY=generate-a-long-random-string-here
+    JWT_SECRET_KEY=another-long-random-string-here
+
+    # PostgreSQL instead of SQLite
+    DATABASE_URL=postgresql+asyncpg://callcenter:YOUR_DB_PASS@localhost/callcenter_db
+
+    # Your real domain (no ngrok)
+    TELNYX_WEBHOOK_BASE_URL=https://yourdomain.com
+
+    # Redis (local on VPS)
+    REDIS_URL=redis://localhost:6379
+
+    # Generate secret keys:
+    python3 -c "import secrets; print(secrets.token_hex(32))"
+
+
+──────────────────────────────────────────────────────────────────
+STEP 5 — PostgreSQL Setup (production only)
+──────────────────────────────────────────────────────────────────
+
+    # As root:
+    apt install -y postgresql postgresql-contrib
+    systemctl enable postgresql
+    systemctl start postgresql
+
+    sudo -u postgres psql
+    CREATE DATABASE callcenter_db;
+    CREATE USER callcenter WITH PASSWORD 'YOUR_STRONG_PASSWORD';
+    GRANT ALL PRIVILEGES ON DATABASE callcenter_db TO callcenter;
+    \q
+
+
+──────────────────────────────────────────────────────────────────
+STEP 6 — Systemd Services (auto-restart on crash/reboot)
+──────────────────────────────────────────────────────────────────
+
+    # Create FastAPI service
+    nano /etc/systemd/system/callcenter-api.service
+
+    [Unit]
+    Description=AI Call Center API
+    After=network.target redis.service
+
+    [Service]
+    User=callcenter
+    WorkingDirectory=/home/callcenter/ai-call-center/backend
+    Environment="PATH=/home/callcenter/ai-call-center/backend/venv/bin"
+    ExecStart=/home/callcenter/ai-call-center/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    Restart=always
+    RestartSec=5
+
+    [Install]
+    WantedBy=multi-user.target
+
+    ---
+
+    # Create Celery Worker service
+    nano /etc/systemd/system/callcenter-worker.service
+
+    [Unit]
+    Description=AI Call Center Celery Worker
+    After=network.target redis.service
+
+    [Service]
+    User=callcenter
+    WorkingDirectory=/home/callcenter/ai-call-center/backend
+    Environment="PATH=/home/callcenter/ai-call-center/backend/venv/bin"
+    ExecStart=/home/callcenter/ai-call-center/backend/venv/bin/celery -A app.core.celery_app worker --loglevel=info -Q calls,email,documents,default -c 4
+    Restart=always
+    RestartSec=10
+
+    [Install]
+    WantedBy=multi-user.target
+
+    ---
+
+    # Create Celery Beat service
+    nano /etc/systemd/system/callcenter-beat.service
+
+    [Unit]
+    Description=AI Call Center Celery Beat
+    After=network.target redis.service
+
+    [Service]
+    User=callcenter
+    WorkingDirectory=/home/callcenter/ai-call-center/backend
+    Environment="PATH=/home/callcenter/ai-call-center/backend/venv/bin"
+    ExecStart=/home/callcenter/ai-call-center/backend/venv/bin/celery -A app.core.celery_app beat --loglevel=info
+    Restart=always
+    RestartSec=10
+
+    [Install]
+    WantedBy=multi-user.target
+
+    ---
+
+    # Enable and start all services
+    systemctl daemon-reload
+    systemctl enable callcenter-api callcenter-worker callcenter-beat
+    systemctl start callcenter-api callcenter-worker callcenter-beat
+
+    # Check status
+    systemctl status callcenter-api
+    journalctl -u callcenter-api -f   # live logs
+
+
+──────────────────────────────────────────────────────────────────
+STEP 7 — Nginx Reverse Proxy + SSL
+──────────────────────────────────────────────────────────────────
+
+    # Point your domain's A record to YOUR_SERVER_IP first
+
+    nano /etc/nginx/sites-available/callcenter
+
+    server {
+        listen 80;
+        server_name yourdomain.com www.yourdomain.com;
+
+        # Frontend (Next.js)
+        location / {
+            proxy_pass http://localhost:3000;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_cache_bypass $http_upgrade;
+        }
+
+        # Backend API
+        location /api {
+            proxy_pass http://localhost:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    }
+
+    ln -s /etc/nginx/sites-available/callcenter /etc/nginx/sites-enabled/
+    nginx -t
+    systemctl reload nginx
+
+    # Get SSL certificate (free via Let's Encrypt)
+    certbot --nginx -d yourdomain.com -d www.yourdomain.com
+
+
+──────────────────────────────────────────────────────────────────
+STEP 8 — Start Next.js as a service
+──────────────────────────────────────────────────────────────────
+
+    nano /etc/systemd/system/callcenter-frontend.service
+
+    [Unit]
+    Description=AI Call Center Frontend
+    After=network.target
+
+    [Service]
+    User=callcenter
+    WorkingDirectory=/home/callcenter/ai-call-center/frontend
+    ExecStart=/usr/bin/npm start
+    Restart=always
+    RestartSec=5
+    Environment=PORT=3000
+
+    [Install]
+    WantedBy=multi-user.target
+
+    systemctl enable callcenter-frontend
+    systemctl start callcenter-frontend
+
+
+──────────────────────────────────────────────────────────────────
+STEP 9 — Update Telnyx webhook for production
+──────────────────────────────────────────────────────────────────
+
+    Telnyx Portal → Voice → Applications → your app → Edit
+    → Webhook URL: https://yourdomain.com/api/v1/telephony/webhook
+    → Save
+
+
+──────────────────────────────────────────────────────────────────
+STEP 10 — Verify Everything Works
+──────────────────────────────────────────────────────────────────
+
+    # Check all services running
+    systemctl status callcenter-api callcenter-worker callcenter-beat callcenter-frontend
+
+    # Test API health
+    curl https://yourdomain.com/api/health
+
+    # Test Telnyx webhook connectivity
+    # In Telnyx portal → Voice → Applications → your app → "Send test event"
+
+    # Make a test call — call your Telnyx DID from your mobile
+    # You should hear the AI agent greet you in ~2 seconds
+
+
+═══════════════════════════════════════════════════════════════════
+USEFUL COMMANDS
+═══════════════════════════════════════════════════════════════════
+
+    # View live API logs
+    journalctl -u callcenter-api -f
+
+    # View worker logs
+    journalctl -u callcenter-worker -f
+
+    # Restart after code update
+    git pull
+    systemctl restart callcenter-api callcenter-worker callcenter-beat callcenter-frontend
+
+    # Redis monitoring
+    redis-cli monitor
+
+    # Check active calls in Redis (local dev)
+    redis-cli keys "call:*"
+
+    # Database backup (PostgreSQL)
+    pg_dump callcenter_db > backup_$(date +%Y%m%d).sql
+
+
+═══════════════════════════════════════════════════════════════════
+TELNYX CHECKLIST
+═══════════════════════════════════════════════════════════════════
+
+    □ API Key created (KEY01...)
+    □ Phone number bought
+    □ Call Control Application created
+    □ Number linked to application
+    □ Webhook URL set (ngrok for dev, real domain for prod)
+    □ Webhook API Version = API v2
+    □ Level 2 verification completed (for 10 concurrent calls)
+    □ Billing added (card on file)
+
+    Webhook URL format:
+    https://YOUR_DOMAIN/api/v1/telephony/webhook
+
+
+═══════════════════════════════════════════════════════════════════
+HOW SIMULTANEOUS CALLS WORK (quick reference)
+═══════════════════════════════════════════════════════════════════
+
+    - 1 DID number handles UNLIMITED simultaneous inbound calls
+    - Each call gets its own webhook → its own Redis session → its own AI conversation
+    - Callers never hear "busy" (unlike a mobile phone)
+    - Outbound concurrent limit: 2 (new) → 10 (Level 2 verified) → custom (email Telnyx)
+    - Use pay-per-minute billing for inbound (not channel billing) → no channel limit
+    - Server can handle 50-100 simultaneous AI conversations on a 2-vCPU VPS

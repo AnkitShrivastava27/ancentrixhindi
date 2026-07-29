@@ -1,0 +1,365 @@
+"""
+Low-latency call pipeline for Vobiz's bidirectional media stream.
+
+Rewritten to use Vobiz's OWN official Pipecat integration package
+(`pipecat-vobiz` on PyPI — see requirements.txt) instead of a hand-rolled
+serializer. That change fixes real, confirmed-against-source bugs the old
+hand-rolled version had:
+
+  - Outbound audio must be sent as `{"event": "playAudio", "media": {...}}`
+    — the old code sent `{"event": "media", ...}`, which Vobiz's server
+    does not recognize as a valid inbound-to-Vobiz message at all, so even
+    with every import fixed the caller would never have heard anything.
+  - Barge-in/interruption must send `{"event": "clearAudio", ...}`, not
+    `{"event": "clear", ...}`.
+  - The exact `start` event field names (`streamId`, `callId`,
+    `mediaFormat.encoding`, `mediaFormat.sampleRate`) are now read via
+    `parse_vobiz_start()`, which is Vobiz's own helper, instead of the old
+    code's defensive multi-key guessing.
+
+Replaces the per-turn HTTP+XML round trip in vobiz_webhook.py's Gather
+flow with one persistent WebSocket: caller audio streams in continuously,
+STT/LLM/TTS run as a pipeline, and reply audio streams back as it's
+generated — instead of "wait for full reply, then POST a new webhook".
+
+Only used when the company's resolved TTS provider is "sarvam" or
+"deepgram" (see resolve_tts_provider in app/services/tts/providers.py).
+"vobiz" as a provider stays on the existing XML <Speak>/<Gather> flow,
+since Vobiz has no standalone synthesize API to plug in here.
+"""
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+async def run_vobiz_stream_pipeline(
+    websocket,
+    call_uuid: str,
+    company: Any,
+    lead: Any,
+    mode: str,
+    greeting: str,
+) -> None:
+    """
+    Entry point called by the /api/v1/vobiz-stream/media-stream WebSocket
+    route, AFTER websocket.accept() has already been called there.
+
+    Builds and runs one Pipecat pipeline for the lifetime of this call.
+    """
+    # Imports are local to this function so importing this module doesn't
+    # hard-require pipecat/pipecat-vobiz unless this streaming path is
+    # actually used (the "vobiz" native provider never touches this file).
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    from pipecat.frames.frames import TTSSpeakFrame
+    from pipecat.pipeline.pipeline import Pipeline
+    from pipecat.pipeline.runner import PipelineRunner
+    from pipecat.pipeline.task import PipelineParams, PipelineTask
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair,
+        LLMUserAggregatorParams,
+    )
+    from pipecat.serializers.vobiz import VobizFrameSerializer, parse_vobiz_start
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+    from pipecat.transports.websocket.fastapi import (
+        FastAPIWebsocketParams,
+        FastAPIWebsocketTransport,
+    )
+    from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
+    from app.core.config import settings
+    from app.services.llm.prompts import build_hindi_prompt
+
+    def _resolve_tts_provider(requested: str, language: str) -> tuple[str, Optional[str]]:
+        """
+        Guards against picking a TTS provider that can't actually speak the
+        requested language. Inlined here (rather than imported from
+        app/services/tts/providers.py) because that file is currently
+        entirely commented out in this codebase — if you restore it later,
+        feel free to swap this back to an import instead.
+
+        Deepgram Aura-2 doesn't support Hindi as of writing (confirmed via
+        developers.deepgram.com/docs/tts-models — en/es/de/fr/nl/it/ja only),
+        so Hindi/Hinglish calls requesting "deepgram" fall back to "sarvam".
+        """
+        DEEPGRAM_AURA_SUPPORTED_LANGS = {"en", "es", "de", "fr", "nl", "it", "ja"}
+        provider = (requested or "vobiz").lower()
+        lang_short = (language or "hi").lower().split("-")[0]
+        if provider == "deepgram" and lang_short not in DEEPGRAM_AURA_SUPPORTED_LANGS:
+            warning = (
+                f"Deepgram Aura-2 does not support language='{language}' — "
+                f"falling back to sarvam for this call."
+            )
+            return "sarvam", warning
+        return provider, None
+
+    # ── Read Vobiz's authoritative "start" event off the socket FIRST ──────
+    # This is a raw websocket.receive_text() call — it must happen before
+    # the Pipecat transport starts its own receive loop, and it's what
+    # tells us the real streamId/callId and the wire audio format Vobiz
+    # actually negotiated (mediaFormat), rather than guessing/assuming.
+    parsed = await parse_vobiz_start(websocket)
+    logger.info(
+        f"Vobiz stream start | call_uuid={call_uuid[:12] if call_uuid else '?'} | "
+        f"streamId={parsed['stream_id']!r} callId={parsed['call_id']!r} "
+        f"mediaFormat=({parsed['encoding']!r}, {parsed['sample_rate']})"
+    )
+    vobiz_call_id = parsed["call_id"] or call_uuid
+    vobiz_sample_rate = parsed["sample_rate"] or 8000
+    vobiz_encoding = parsed["encoding"] or "audio/x-mulaw"
+
+    language_code = "hi-IN" if mode != "english" else "en-US"
+    provider, warning = _resolve_tts_provider(
+        getattr(company, "tts_provider", "vobiz"), language_code,
+    )
+    if warning:
+        logger.warning(f"call_uuid={call_uuid[:12]} | {warning}")
+
+    gender = (getattr(company, "voice_gender", None) or "female").lower()
+    voice_override = getattr(company, "tts_voice", None)
+
+    # Prefer this company's own Vobiz credentials (multi-tenant — each
+    # customer can have their own Vobiz sub-account); fall back to the
+    # global .env credentials if the company hasn't set their own.
+    vobiz_auth_id = getattr(company, "vobiz_auth_id", None) or settings.VOBIZ_AUTH_ID or ""
+    vobiz_auth_token = getattr(company, "vobiz_auth_token", None) or settings.VOBIZ_AUTH_TOKEN or ""
+
+    # ── Transport: Vobiz <-> Pipecat over the raw WebSocket ────────────────
+    serializer = VobizFrameSerializer(
+        stream_id=parsed["stream_id"],
+        call_id=vobiz_call_id,
+        auth_id=vobiz_auth_id,
+        auth_token=vobiz_auth_token,
+        params=VobizFrameSerializer.InputParams(
+            vobiz_sample_rate=vobiz_sample_rate,
+            encoding=vobiz_encoding,
+            sample_rate=None,  # take pipeline rate from StartFrame.audio_in_sample_rate below
+            auto_hang_up=True,   # sends {"event":"stop"} + REST DELETE safety net on EndFrame
+        ),
+    )
+    transport = FastAPIWebsocketTransport(
+        websocket=websocket,
+        params=FastAPIWebsocketParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            add_wav_header=False,   # CRITICAL for telephony — raw frames, no WAV container
+            serializer=serializer,
+            # NOTE: vad_analyzer does NOT go here in pipecat 1.x — it's a
+            # silent no-op on the transport. It's wired on
+            # LLMUserAggregatorParams below instead.
+        ),
+    )
+
+    # ── STT: Deepgram streaming (Nova-2 supports Hindi via language="hi") ──
+    stt = DeepgramSTTService(
+        api_key=settings.DEEPGRAM_API_KEY,
+        model="nova-2",
+        language="hi" if mode != "english" else "en",
+    )
+
+    # ── LLM: reuse whichever provider is already configured for this app ──
+    llm = _build_llm_service(settings)
+    _warm_up_llm_provider(settings)  # fire-and-forget — see docstring below
+
+    # ── TTS: Sarvam or Deepgram Aura, per resolve_tts_provider() above ─────
+    tts, tts_sample_rate = _build_tts_service(provider, settings, gender, voice_override, language_code)
+
+    system_prompt = build_hindi_prompt(company, lead, rag_context="", mode=mode)
+    context = LLMContext(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "assistant", "content": greeting},
+        ]
+    )
+    context_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            # start_secs raised slightly above pipecat's default (0.2 -> 0.3):
+            # logs showed frequent barge-in interruptions firing very close
+            # together with TTS starting, consistent with brief noise/breath
+            # sounds being treated as a real interruption and cutting the
+            # bot's own reply off mid-sentence. 0.3s requires marginally more
+            # sustained speech before confirming a real interruption, without
+            # making genuine fast barge-ins feel sluggish. If real
+            # interruptions start feeling delayed, drop this back toward 0.2.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
+            # THE main latency fix: pipecat's default turn-stop strategy is
+            # TurnAnalyzerUserTurnStopStrategy(LocalSmartTurnAnalyzerV3()),
+            # and LocalSmartTurnAnalyzerV3's default SmartTurnParams.stop_secs
+            # is 3.0 — a hard 3-second silence fallback used whenever the
+            # semantic "is this sentence finished?" model isn't confident.
+            # That fallback is exactly what the logs showed ("End of Turn
+            # complete due to stop_secs. Silence in ms: 3000.0") — a flat 3s
+            # tax added on top of STT+LLM+TTS time, independent of Vobiz or
+            # network latency entirely. Dropping it to 1.0s keeps the
+            # semantic model's benefit (it still fires immediately when
+            # confident — see the 200ms-ish COMPLETE results in the logs)
+            # while capping the worst case. If real calls start getting cut
+            # off mid-sentence, raise this — don't drop it all the way back
+            # to 3.0 first, try 1.5-2.0.
+            user_turn_strategies=UserTurnStrategies(
+                stop=[TurnAnalyzerUserTurnStopStrategy(
+                    turn_analyzer=LocalSmartTurnAnalyzerV3(params=SmartTurnParams(stop_secs=1.0))
+                )],
+            ),
+        ),
+    )
+
+    pipeline = Pipeline([
+        transport.input(),
+        stt,
+        context_aggregator.user(),
+        llm,
+        tts,
+        transport.output(),
+        context_aggregator.assistant(),
+    ])
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            audio_in_sample_rate=vobiz_sample_rate,
+            audio_out_sample_rate=tts_sample_rate,  # native TTS rate — VobizFrameSerializer resamples to 8kHz for the wire
+            allow_interruptions=True,
+            enable_metrics=True,
+        ),
+    )
+
+    # Speak the pre-built greeting directly via TTS the moment the socket
+    # is live — mirrors what the XML flow's <Speak> greeting did, but
+    # through the selected provider instead of Vobiz's own (Hindi-incapable)
+    # Speak verb. Deliberately NOT routed through the LLM: that would cost
+    # a full LLM round trip before the caller hears anything, AND the LLM
+    # would generate its own opening line instead of speaking the actual
+    # configured `greeting` text.
+    @transport.event_handler("on_client_connected")
+    async def _on_connected(_transport, _client):
+        logger.info(f"Vobiz stream pipeline — client connected, speaking greeting | call_uuid={call_uuid[:12]}")
+        await task.queue_frames([TTSSpeakFrame(text=greeting)])
+
+    @transport.event_handler("on_client_disconnected")
+    async def _on_disconnected(_transport, _client):
+        logger.info(f"Vobiz stream pipeline — client disconnected | call_uuid={call_uuid[:12]}")
+        await task.cancel()
+
+    runner = PipelineRunner(handle_sigint=False)
+    await runner.run(task)
+
+
+def _build_llm_service(settings):
+    """Mirrors settings.LLM_PROVIDER (groq | openai | anthropic) already
+    used elsewhere in this app, so switching providers doesn't require
+    touching this file."""
+    provider = (settings.LLM_PROVIDER or "groq").lower()
+
+    if provider == "groq":
+        from pipecat.services.groq.llm import GroqLLMService
+        return GroqLLMService(
+            api_key=settings.GROQ_API_KEY,
+            settings=GroqLLMService.Settings(model=settings.GROQ_MODEL),
+        )
+    if provider == "anthropic":
+        from pipecat.services.anthropic.llm import AnthropicLLMService
+        return AnthropicLLMService(
+            api_key=settings.ANTHROPIC_API_KEY,
+            settings=AnthropicLLMService.Settings(model=settings.ANTHROPIC_MODEL),
+        )
+    from pipecat.services.openai.llm import OpenAILLMService
+    return OpenAILLMService(
+        api_key=settings.OPENAI_API_KEY,
+        settings=OpenAILLMService.Settings(model=settings.OPENAI_MODEL),
+    )
+
+
+def _build_tts_service(
+    provider: str, settings, gender: str, voice_override: Optional[str], language_code: str,
+):
+    """
+    Uses Pipecat's own maintained TTS service classes (not the hand-rolled
+    clients in app/services/tts/providers.py — those stay as a non-Pipecat
+    fallback/reference; Pipecat's built-ins are tested against real
+    accounts and handle reconnect/backoff already).
+
+    Returns (service, native_sample_rate) — the caller sets
+    PipelineTask's audio_out_sample_rate to match, and lets
+    VobizFrameSerializer's own resampler handle downconverting to Vobiz's
+    8kHz wire format, rather than forcing the TTS engine itself to
+    synthesize at 8kHz (lower fidelity than its natural rate).
+    """
+    if provider == "sarvam":
+        from pipecat.services.sarvam.tts import SarvamTTSService
+        from pipecat.transcriptions.language import Language
+        # bulbul:v3 (not v2): Sarvam's own docs position v2 as the "standard"
+        # model and v3 as "advanced ... with temperature control" — v2 is
+        # the one that tends to sound flat/robotic; v3 is the fix, not a
+        # tuning knob on v2. v3 also natively synthesizes at 24kHz (v2: only
+        # 22050) — matched below instead of forcing 8kHz at the source.
+        default_voice = ("priya" if gender == "female" else "rahul")
+        return (
+            SarvamTTSService(
+                api_key=settings.SARVAM_API_KEY,
+                sample_rate=24000,  # bulbul:v3's native rate — see docstring above
+                settings=SarvamTTSService.Settings(
+                    voice=voice_override or default_voice,
+                    model="bulbul:v3",
+                    language=Language.HI,
+                    temperature=0.7,  # v3-only: more natural/expressive than v2's flat default; try 0.5-0.9 to taste
+                ),
+            ),
+            24000,
+        )
+    if provider == "deepgram":
+        from pipecat.services.deepgram.tts import DeepgramTTSService
+        default_voice = "aura-2-luna-en" if gender == "female" else "aura-2-orion-en"
+        return (
+            DeepgramTTSService(
+                api_key=settings.DEEPGRAM_API_KEY,
+                voice=voice_override or default_voice,
+                sample_rate=8000,
+            ),
+            8000,
+        )
+    raise ValueError(
+        f"'{provider}' has no Pipecat streaming path — this function should only "
+        f"be called after resolve_tts_provider() has already ruled out 'vobiz'"
+    )
+
+
+def _warm_up_llm_provider(settings) -> None:
+    """
+    Fires a tiny, throwaway completion request in the background the
+    moment the pipeline starts, purely to pay Groq/Anthropic/OpenAI's
+    TLS+connection-pool cold-start cost before the caller's real first
+    turn needs an answer. Logs showed this cold start costing ~2s on turn
+    1 (Groq TTFB 2.019s) vs ~0.36s on turn 2 once the connection was warm
+    — this closes that gap for the very first turn too. Fire-and-forget:
+    failures here are silently ignored, since this is purely an
+    optimization and the real request will just pay the cold-start cost
+    itself if this fails.
+    """
+    import asyncio
+
+    async def _ping():
+        try:
+            provider = (settings.LLM_PROVIDER or "groq").lower()
+            if provider == "groq":
+                from groq import AsyncGroq
+                client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+                await client.chat.completions.create(
+                    model=settings.GROQ_MODEL,
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=1,
+                )
+            # Anthropic/OpenAI warmup skipped for now — Groq is the default
+            # LLM_PROVIDER and the one the logs showed the cold-start hit
+            # on. Add equivalent pings here if you switch LLM_PROVIDER and
+            # see the same first-turn TTFB spike on those instead.
+        except Exception as e:
+            logger.debug(f"LLM warmup ping failed (non-fatal, ignored): {e}")
+
+    asyncio.create_task(_ping())

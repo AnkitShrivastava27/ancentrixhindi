@@ -1,0 +1,62 @@
+.page { max-width: 1500px; align-items: center; margin: 0 auto; padding: 24px 16px; }
+
+.head { margin-bottom: 24px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.statsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
+.midGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+
+.licenseCard {
+  background: var(--card);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  grid-column: span 4;
+}
+.licenseCardInactive { border: 1px solid rgba(242,87,87,0.2); }
+.licenseCardActive { border: 1px solid var(--border); }
+.licenseRow { display: flex; align-items: center; justify-content: space-between; }
+.licenseLabel { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 2px; }
+.licenseSub { font-size: 12px; }
+.licenseStatus { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; text-align: right; }
+
+.sCard {
+  background: linear-gradient(145deg, #1a1a1c 0%, #202024 45%, #2c2c30 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.sCardHead {
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+}
+.sCardHeadText { font-size: 15px; font-weight: 600; color: #c3c7d1; text-transform: uppercase; letter-spacing: 0.08em; }
+.sCardBody { padding: 16px 18px; }
+
+.pipelineRow { margin-bottom: 10px; }
+.pipelineTop { display: flex; justify-content: space-between; margin-bottom: 5px; }
+.pipelineLabel { font-size: 12px; color: var(--text2); }
+.pipelineValue { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.pipelineTrack { height: 4px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+.pipelineFill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+.statRow { display: flex; justify-content: space-between; align-items: center; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.statRowLabel { font-size: 12px; color: var(--text3); }
+.statRowValue { font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+.emptyCalls { padding: 28px 0; text-align: center; color: var(--text3); font-size: 13px; }
+
+.table { width: 100%; border-collapse: collapse; }
+.th { padding: 6px 10px; text-align: left; font-size: 10px; font-weight: 600; color: #3a3d4e; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid rgba(255,255,255,0.05); white-space: nowrap; }
+.tr { border-bottom: 1px solid rgba(255,255,255,0.04); }
+.trLast { border-bottom: none; }
+.td { padding: 9px 10px; }
+.tdMono { padding: 9px 10px; font-size: 12px; color: var(--text2); font-family: monospace; }
+.tdMonoDim { padding: 9px 10px; font-size: 12px; color: var(--text3); font-family: monospace; }
+.tdStatus { padding: 9px 10px; font-size: 12px; font-weight: 500; }
+.tdEmoji { padding: 9px 10px; font-size: 14px; }
+.tdSummary { padding: 9px 10px; font-size: 12px; color: var(--text3); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dirBadge { font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 20px; }

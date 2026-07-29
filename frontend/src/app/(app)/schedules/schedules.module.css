@@ -1,0 +1,81 @@
+.page { max-width: 1500px; align-items: center; margin: 0 auto; padding: 24px 16px; }
+.head { margin-bottom: 20px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.panel {
+  background: linear-gradient(145deg, #1a1a1c 0%, #202024 45%, #2c2c30 100%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+.gridCols { display: grid; grid-template-columns: 1fr 110px 160px 90px 120px; }
+.rowHead { padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.rowHeadCell { font-size: 10px; font-weight: 600; color: #3a3d4e; text-transform: uppercase; letter-spacing: 0.08em; }
+.centerPad { display: flex; justify-content: center; padding: 48px; }
+
+.row { align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.12s; }
+.rowLast { align-items: center; padding: 12px 16px; border-bottom: none; transition: background 0.12s; }
+.rowActive { background: rgba(62,207,142,0.02); }
+
+.batchTop { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.batchIcon { font-size: 14px; }
+.batchName { font-size: 13px; font-weight: 500; color: #e8eaf0; }
+.pausedPill { font-size: 10px; padding: 1px 6px; border-radius: 10px; background: rgba(245,166,35,0.1); color: var(--amber); }
+.batchDates { font-size: 11px; color: #4a4d5e; padding-left: 22px; }
+
+.cellPrimary { font-size: 12px; color: var(--text2); }
+.cellSecondary { font-size: 10px; color: #4a4d5e; margin-top: 2px; }
+.daysText { font-size: 11px; color: var(--text2); }
+.tzGood { font-size: 10px; color: var(--green); margin-top: 2px; }
+
+.actionsRow { display: flex; gap: 5px; }
+.iconBtn { width: 28px; height: 28px; border-radius: 6px; border: none; cursor: pointer; font-size: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.12s; }
+.iconBtnPause { background: rgba(245,166,35,0.1); color: var(--amber); }
+.iconBtnPlay { background: rgba(62,207,142,0.1); color: var(--green); }
+.iconBtnEdit { border: 1px solid var(--border); background: transparent; font-size: 11px; color: var(--text2); }
+.iconBtnDelete { background: transparent; color: #3a3d4e; }
+.iconBtnDelete:hover { background: rgba(242,87,87,0.1); color: var(--red); }
+
+/* Form layout */
+.formGrid { display: grid; grid-template-columns: 1fr 240px; gap: 16px; max-width: 820px; }
+.formCard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.formTitle { font-size: 14px; font-weight: 600; color: var(--text); }
+
+.label { font-size: 11px; font-weight: 500; color: #4a4d5e; text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-bottom: 5px; }
+.fieldInput {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; font-size: 13px; color: var(--text); outline: none; width: 100%; font-family: inherit;
+}
+.fieldInput:focus { border-color: var(--accent); }
+.fieldInputDisabled { opacity: 0.5; }
+
+.rowGrid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+.checkboxRow {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 10px 12px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);
+}
+.checkbox { accent-color: var(--accent); width: 14px; height: 14px; }
+.checkboxTitle { font-size: 13px; color: #c8cad8; font-weight: 500; }
+.checkboxSub { font-size: 11px; color: #4a4d5e; margin-top: 1px; }
+
+.dayChips { display: flex; gap: 5px; flex-wrap: wrap; }
+.dayChip { padding: 4px 11px; border-radius: 6px; font-size: 12px; cursor: pointer; font-family: inherit; border: 1px solid var(--border); background: transparent; color: var(--text3); transition: all 0.12s; }
+.dayChipActive { border: 1px solid rgba(200,202,210,0.5); background: var(--accent-soft); color: #e8e9ee; }
+
+.formActions { display: flex; gap: 8px; padding-top: 4px; }
+
+.previewStack { display: flex; flex-direction: column; gap: 12px; }
+.previewCard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 14px; }
+.previewTitle { font-size: 10px; font-weight: 600; color: #3a3d4e; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+.previewRow { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+.previewRowLabel { color: #4a4d5e; }
+.previewRowValue { color: #c8cad8; font-weight: 500; }
+.previewGood { font-size: 11px; color: var(--green); margin-top: 4px; }
+
+.howItem { display: flex; gap: 8px; margin-bottom: 10px; }
+.howIcon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+.howTitle { font-size: 12px; font-weight: 500; color: var(--text2); }
+.howDesc { font-size: 11px; color: #4a4d5e; line-height: 1.4; margin-top: 1px; }

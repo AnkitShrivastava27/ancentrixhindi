@@ -1,0 +1,142 @@
+# docker-compose.yml — backend stack only. Frontend deploys separately to
+# Vercel (see DEPLOYMENT.md) and is not part of this compose file.
+#
+# Services:
+#   postgres        — shared DB for the main app AND license/user data
+#                      (one Postgres instance, per the earlier decision —
+#                      not two separate databases).
+#   redis           — login rate limiting + license status caching +
+#                      Celery broker. Real Redis now (see
+#                      app/core/redis_client.py) — this MUST be present
+#                      for multi-worker/multi-replica correctness; the
+#                      in-memory fallback in that file is single-process
+#                      only and not safe to rely on here.
+#   backend         — FastAPI app (this Dockerfile), 2 uvicorn workers by
+#                      default (see WEB_CONCURRENCY in the Dockerfile).
+#   celery-worker    — background tasks (email sending, batch calling,
+#                      scheduled campaigns — see app/tasks/tasks.py).
+#   celery-beat      — periodic tasks (24h license re-validation, etc. —
+#                      see app/core/celery_app.py's beat_schedule).
+#
+# No audio/recording volume anywhere — intentional. Neither call flow
+# writes call audio to local disk (confirmed earlier: the old Record-mode
+# flow downloads to memory and discards after transcription; the
+# streaming flow never records at all). The only thing that needs to
+# persist across restarts is Postgres data and the local ChromaDB
+# knowledge-base store.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aical}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-aical}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aical}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published to the host by default — only `backend`/`celery-*`
+    # reach it over the compose network. Uncomment if you need to connect
+    # a DB client from outside the VM (and firewall it if you do).
+    # ports:
+    #   - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # ports:
+    #   - "6379:6379"
+
+  backend:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aical}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aical}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+    ports:
+      # Direct HTTP access for local testing / debugging. Once Caddy (below)
+      # is confirmed working in front of this, either remove this mapping
+      # or firewall port 8000 at the Azure NSG level so the only public
+      # entry point is Caddy's 443.
+      - "8000:8000"
+    volumes:
+      # Persists the local ChromaDB knowledge-base embeddings across
+      # container restarts/redeploys. Not audio, not recordings — just
+      # the vector store built from uploaded knowledge-base documents.
+      - chroma_data:/app/chroma_data
+
+  celery-worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aical}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aical}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - chroma_data:/app/chroma_data
+
+  celery-beat:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.core.celery_app beat --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aical}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aical}
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+
+  # Optional but recommended: automatic HTTPS via Let's Encrypt, zero
+  # manual cert work. Needs a real domain pointed at this VM's IP (an A
+  # record) — see DEPLOYMENT.md. If you'd rather terminate TLS at an
+  # Azure-managed layer (App Gateway / Front Door) instead, remove this
+  # service and publish `backend`'s port 8000 directly.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  redis_data:
+  chroma_data:
+  caddy_data:
+  caddy_config:
