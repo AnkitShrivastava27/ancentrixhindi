@@ -26,3 +26,10 @@ jobs:
           file: ./backend/Dockerfile.azure
           push: true
           tags: astriccontainer.azurecr.io/aical-multiuser:latest
+
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: astricvoicebackend
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: astriccontainer.azurecr.io/aical-multiuser:latest
