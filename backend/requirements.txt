@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # ── STT — Deepgram ────────────────────────────────────────────────────────────
 websockets>=13.1,<14      # bumped from ==12.0 — pipecat-ai 1.x requires websockets>=13.1; our own raw Deepgram STT client (websockets==12.0 API) still works fine on 13.x
 # deepgram-sdk==3.7.7    # Optional official SDK — we use raw websockets above
