@@ -1,4 +1,4 @@
-.page { max-width: 680px; }
+/* .page { max-width: 680px; }
 .head { margin-bottom: 24px; }
 .headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
 .headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
@@ -68,4 +68,4 @@
 .accountEmail { font-size: 13px; color: var(--text2); }
 .accountHint { font-size: 11px; color: #4a4d5e; margin-top: 4px; }
 
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin { to { transform: rotate(360deg); } } */

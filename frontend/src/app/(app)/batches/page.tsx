@@ -50,7 +50,7 @@ export default function BatchesPage() {
     <div className={styles.page}>
       <div className={styles.head}>
         <h1 className={styles.headTitle}>Batches</h1>
-        <p className={styles.headSub}>Group leads into voice or email campaigns</p>
+        <p className={styles.headSub}>Group leads into voice  campaigns</p>
       </div>
 
       <Tabs active={tab} onChange={setTab}
@@ -83,7 +83,7 @@ export default function BatchesPage() {
             {loading ? (
               <div className={styles.centerPad}><Spinner size={24} /></div>
             ) : visible.length === 0 ? (
-              <EmptyState icon="▤" title="No batches yet" description="Create a batch to start running voice or email campaigns at scale"
+              <EmptyState icon="▤" title="No batches yet" description="Create a batch to start running voice campaigns at scale"
                 action={<Button variant="primary" onClick={() => setTab('create')}>+ New Batch</Button>} />
             ) : visible.map((b, i) => {
               const col = STATUS_COLOR[b.status] || '#5a5d70'
@@ -92,8 +92,8 @@ export default function BatchesPage() {
                   onClick={() => setDetail(b)}>
                   <div className={styles.nameCell}>
                     <div className={styles.nameTop}>
-                      <span className={styles.typeIcon}>{b.batch_type === 'voice' ? '📞' : '✉️'}</span>
-                      {b.batch_type === 'voice' && <span className={styles.flagIcon} title="Vobiz (India)">{'🇮🇳'}</span>}
+                      <span className={styles.typeIcon}>📞</span>
+                      <span className={styles.flagIcon} title="Vobiz (India)">{'🇮🇳'}</span>
                       <span className={styles.batchName}>{b.name}</span>
                     </div>
                     {b.campaign_name && <div className={styles.campaignName}>{b.campaign_name}</div>}
@@ -133,10 +133,9 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
   const [previewing, setPreviewing] = useState(false)
   const [f, setF] = useState({
     name: '', campaign_name: '', product_focus: '',
-    batch_type: 'voice' as 'voice'|'email', call_mode: 'sales' as 'sales'|'support',
+    batch_type: 'voice' as 'voice', call_mode: 'sales' as 'sales'|'support',
     provider: 'vobiz' as 'vobiz',
     statuses: [] as string[], country_code: '' as ''|'+91'|'other', limit: '', exclude_done: true,
-    email_subject: '', email_body: '',
     withSchedule: false,
     start_datetime: '', end_datetime: '',
     window_start: '09:00', window_end: '18:00',
@@ -161,7 +160,6 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
       const b: any = await batchesApi.create({
         name: f.name, batch_type: f.batch_type, call_mode: f.call_mode, provider: f.provider,
         campaign_name: f.campaign_name || undefined, product_focus: f.product_focus || undefined,
-        email_subject_template: f.email_subject || undefined, email_body_template: f.email_body || undefined,
         filter_criteria: { status: f.statuses.length ? f.statuses : undefined, country_code: f.country_code || undefined, limit: f.limit ? Number(f.limit) : undefined, exclude_statuses: f.exclude_done ? ['closed_won','closed_lost','do_not_call'] : undefined },
       })
       if (f.withSchedule && f.start_datetime) {
@@ -202,27 +200,13 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
               <Input label="Product Focus" value={f.product_focus} onChange={e => set('product_focus', e.target.value)} />
             </div>
             <div>
-              <label className={styles.label}>Type</label>
-              <div className={styles.typeGrid}>
-                {[{ v: 'voice', icon: '📞', title: 'Voice Calls', desc: 'AI calls leads' }, { v: 'email', icon: '✉️', title: 'Email Campaign', desc: 'AI emails leads' }].map(t => (
-                  <button key={t.v} onClick={() => set('batch_type', t.v)} className={`${styles.typeCard} ${f.batch_type === t.v ? styles.typeCardActive : ''}`}>
-                    <div className={styles.typeIconBig}>{t.icon}</div>
-                    <div className={styles.typeTitle}>{t.title}</div>
-                    <div className={styles.typeDesc}>{t.desc}</div>
-                  </button>
+              <label className={styles.label}>Call Mode</label>
+              <div className={styles.modeRow}>
+                {[{ v: 'sales', l: '💰 Sales' }, { v: 'support', l: '🎧 Support' }].map(m => (
+                  <button key={m.v} onClick={() => set('call_mode', m.v)} className={`${styles.modeBtn} ${f.call_mode === m.v ? styles.modeBtnActive : ''}`}>{m.l}</button>
                 ))}
               </div>
             </div>
-            {f.batch_type === 'voice' && (
-              <div>
-                <label className={styles.label}>Call Mode</label>
-                <div className={styles.modeRow}>
-                  {[{ v: 'sales', l: '💰 Sales' }, { v: 'support', l: '🎧 Support' }].map(m => (
-                    <button key={m.v} onClick={() => set('call_mode', m.v)} className={`${styles.modeBtn} ${f.call_mode === m.v ? styles.modeBtnActive : ''}`}>{m.l}</button>
-                  ))}
-                </div>
-              </div>
-            )}
             {/* Provider picker removed — Vobiz is the sole telephony provider now */}
             <label className={styles.checkboxRow}>
               <input type="checkbox" checked={f.withSchedule} onChange={e => set('withSchedule', e.target.checked)} className={styles.checkbox} />
@@ -267,13 +251,6 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
 
           {/* ── Step 3 ── */}
           {step === 3 && <>
-            {f.batch_type === 'email' && <>
-              <Input label="Email Subject *" value={f.email_subject} onChange={e => set('email_subject', e.target.value)} placeholder="Hi {lead_name}, introducing {company_name}" />
-              <div>
-                <label className={styles.label}>Email Body *</label>
-                <textarea value={f.email_body} onChange={e => set('email_body', e.target.value)} rows={6} placeholder={"Namaste {lead_name} ji,\n\nMain {agent_name} hoon…"} className={`${styles.fieldInput} ${styles.fieldTextarea}`} />
-              </div>
-            </>}
             {f.withSchedule && <>
               <div className={styles.rowGrid2}>
                 <div><label className={styles.label}>Start *</label><input type="datetime-local" value={f.start_datetime} onChange={e => set('start_datetime', e.target.value)} className={styles.fieldInput} /></div>
@@ -296,9 +273,9 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
                 <Input label="Delay (sec)" type="number" value={f.delay_s} onChange={e => set('delay_s', e.target.value)} />
               </div>
             </>}
-            {!f.withSchedule && f.batch_type !== 'email' && (
+            {!f.withSchedule && (
               <div className={styles.reviewBox}>
-                {[['Name', f.name], ['Type', `${f.batch_type} / ${f.call_mode}`], ['Provider', f.provider], ['Leads', f.limit || 'all matching'], ['Campaign', f.campaign_name||'—'], ['Filter', f.statuses.join(', ')||'all active'], ['Country', f.country_code||'all']].map(([l,v]) => (
+                {[['Name', f.name], ['Mode', f.call_mode], ['Provider', f.provider], ['Leads', f.limit || 'all matching'], ['Campaign', f.campaign_name||'—'], ['Filter', f.statuses.join(', ')||'all active'], ['Country', f.country_code||'all']].map(([l,v]) => (
                   <div key={l as string} className={styles.reviewRow}>
                     <span className={styles.reviewLabel}>{l}</span>
                     <span className={styles.reviewValue}>{v as string}</span>
@@ -324,7 +301,7 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
       {/* Tips */}
       <div className={styles.guideCard}>
         <div className={styles.guideTitle}>Guide</div>
-        {step === 1 && [['📞','Voice','AI dials leads and has live conversations.'], ['✉️','Email','AI sends and replies to emails automatically.'], ['📅','Schedule','Set a time window and rate limit.']].map(([ic,t,d]) => (
+        {step === 1 && [['📞','Voice','AI dials leads and has live conversations.'], ['📅','Schedule','Set a time window and rate limit.']].map(([ic,t,d]) => (
           <div key={t as string} className={styles.guideItem}>
             <span className={styles.guideIcon}>{ic}</span>
             <div><div className={styles.guideItemTitle}>{t}</div><div className={styles.guideItemDesc}>{d}</div></div>
@@ -371,7 +348,7 @@ function BatchDetail({ batch, onClose, onDelete, onRefresh }: any) {
         {/* Header */}
         <div className={styles.modalHead}>
           <div className={styles.modalHeadLeft}>
-            <span className={styles.modalHeadIcon}>{batch.batch_type === 'voice' ? '📞' : '✉️'}</span>
+            <span className={styles.modalHeadIcon}>📞</span>
             <div>
               <div className={styles.modalHeadName}>{batch.name}</div>
               {batch.campaign_name && <div className={styles.modalHeadCampaign}>{batch.campaign_name}</div>}
@@ -402,7 +379,7 @@ function BatchDetail({ batch, onClose, onDelete, onRefresh }: any) {
             ))}
           </div>
           {/* Details */}
-          {[['Type', batch.batch_type], ['Mode', batch.call_mode||'—'], ['Provider', batch.provider||'vobiz'], ['Product', batch.product_focus||'—']].map(([l,v]) => (
+          {[['Mode', batch.call_mode||'—'], ['Provider', batch.provider||'vobiz'], ['Product', batch.product_focus||'—']].map(([l,v]) => (
             <div key={l as string} className={styles.detailRow}>
               <span className={styles.detailLabel}>{l}</span>
               <span className={styles.detailValue}>{v}</span>

@@ -76,7 +76,6 @@ export default function DashboardPage() {
   const { license } = useAuthStore()
   const [ls, setLs] = useState<any>(null)
   const [cs, setCs] = useState<any>(null)
-  const [es, setEs] = useState<any>(null)
   const [calls, setCalls] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -84,10 +83,9 @@ export default function DashboardPage() {
     Promise.all([
       leadsApi.stats().catch(() => null),
       callsApi.stats().catch(() => null),
-      //
       callsApi.list({ limit: 6 }).catch(() => ({ calls: [] })),
-    ]).then(([l, c, e, cl]: any) => {
-      setLs(l); setCs(c); setEs(e); setCalls(cl?.calls || [])
+    ]).then(([l, c, cl]: any) => {
+      setLs(l); setCs(c); setCalls(cl?.calls || [])
       setLoading(false)
     })
   }, [])
@@ -99,13 +97,11 @@ export default function DashboardPage() {
         <p className={styles.headSub}>Your AI call center at a glance</p>
       </div>
 
-      {/* Stats grid — minutes bar spans full width */}
+      {/* Stats grid */}
       <div className={styles.statsGrid}>
         <LicenseCard license={license} />
         <StatCard label="Total Leads"    value={ls?.total || 0}      color="#a594ff" loading={loading} />
         <StatCard label="Total Calls"    value={cs?.total || 0}      color="#3ecf8e" loading={loading} />
-        <StatCard label="Emails Sent"    value={es?.sent || 0}       color="#4da6ff" loading={loading} />
-        <StatCard label="Pending Review" value={es?.pending_review || 0} color="#f5a623" loading={loading} />
       </div>
 
       {/* Middle row */}
@@ -138,17 +134,6 @@ export default function DashboardPage() {
             <Row label="No Answer"    value={loading ? '—' : cs?.no_answer || 0}   color="#5a5d70" />
             <Row label="Transferred"  value={loading ? '—' : cs?.transferred || 0} color="#f5a623" />
             <Row label="Avg Duration" value={loading ? '—' : `${cs?.avg_duration_seconds || 0}s`} />
-          </div>
-        </SCard>
-
-        <SCard title="Email Activity">
-          <div>
-            <Row label="Sent"         value={loading ? '—' : es?.sent || 0}               color="#4da6ff" />
-            <Row label="Opened"       value={loading ? '—' : es?.opened || 0}             color="#a594ff" />
-            <Row label="Replied"      value={loading ? '—' : es?.replied || 0}            color="#3ecf8e" />
-            <Row label="Open Rate"    value={loading ? '—' : `${es?.open_rate || 0}%`}    color="#a594ff" />
-            <Row label="Reply Rate"   value={loading ? '—' : `${es?.reply_rate || 0}%`}   color="#3ecf8e" />
-            <Row label="Needs Review" value={loading ? '—' : es?.pending_review || 0}     color={es?.pending_review > 0 ? '#f5a623' : undefined} />
           </div>
         </SCard>
       </div>
