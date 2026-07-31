@@ -92,6 +92,23 @@ class RedisClient:
                 self._connect_failed_logged = True
             return None
 
+    async def aclose(self):
+        """Closes and forgets the cached client so the NEXT call to
+        _get_client() reconnects from scratch. Needed because this
+        client is a module-level singleton, but Celery's run_async()
+        (app/tasks/tasks.py) gives every single task its own brand-new
+        event loop — this client's underlying connection pool is tied
+        to whatever loop was running the first time it connected, so
+        reusing it from a later task's different loop fails with
+        "Event loop is closed", the same class of bug the SQLAlchemy
+        engine had. Call this at the end of each run_async() call."""
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+            self._client = None
+
     async def set(self, key: str, value: Any, expire: int = 3600):
         client = await self._get_client()
         payload = json.dumps(value) if not isinstance(value, str) else value

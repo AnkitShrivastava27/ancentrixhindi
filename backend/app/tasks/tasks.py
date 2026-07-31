@@ -49,6 +49,13 @@ def run_async(coro):
             # to open clean connections under its own (also new) loop.
             from app.core.database import engine
             loop.run_until_complete(engine.dispose())
+            # Same fix, same reason, different global singleton — see
+            # RedisClient.aclose()'s docstring in app/core/redis_client.py.
+            # This is what was causing "License gate check failed
+            # (allowing call): Event loop is closed" — is_call_allowed()
+            # reads cached license status from this same Redis client.
+            from app.core.redis_client import redis_client
+            loop.run_until_complete(redis_client.aclose())
         except Exception:
             pass
         finally:
