@@ -81,11 +81,14 @@ class Settings(BaseSettings):
     PUBLIC_BASE_URL: Optional[str] = None
 
     # ── Vobiz (sole telephony provider) ──────────────────────────────────
-    # Global fallback used when a company hasn't set its own vobiz_auth_id/
-    # vobiz_auth_token/vobiz_phone_number.
-    VOBIZ_AUTH_ID: Optional[str] = None
-    VOBIZ_AUTH_TOKEN: Optional[str] = None
-    VOBIZ_PHONE_NUMBER: Optional[str] = None
+    # No global VOBIZ_AUTH_ID/VOBIZ_AUTH_TOKEN/VOBIZ_PHONE_NUMBER here on
+    # purpose — every company must set its own vobiz_auth_id/
+    # vobiz_auth_token/vobiz_phone_number via Settings. There used to be a
+    # global fallback read from .env; removed because a company with no
+    # credentials of its own would otherwise silently place/receive calls
+    # (and incur charges) on whichever account happened to be in .env —
+    # wrong for a genuinely multi-tenant deployment. See
+    # app/services/telephony/vobiz_service.py and vobiz_stream_pipeline.py.
     # True -> outbound calls use the Pipecat streaming pipeline
     # (/vobiz-stream/answer-stream). False -> rollback to the old
     # Record+Gather XML flow (/vobiz/answer). Override with

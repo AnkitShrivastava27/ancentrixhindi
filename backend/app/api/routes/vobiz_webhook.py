@@ -3138,7 +3138,13 @@ async def _process_recording_turn(
     """The actual per-turn work: transcribe the recording, then build the
     reply. Runs either inline (filler/redirect disabled) or as a background
     asyncio.Task consumed by /continue (filler/redirect enabled)."""
-    transcript = await _transcribe_url(recording_url)
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        company = await _get_company(company_id, db) if company_id else None
+    vobiz_auth_id = getattr(company, "vobiz_auth_id", "") or "" if company else ""
+    vobiz_auth_token = getattr(company, "vobiz_auth_token", "") or "" if company else ""
+
+    transcript = await _transcribe_url(recording_url, vobiz_auth_id, vobiz_auth_token)
     if not transcript:
         logger.warning(f"Empty transcript | call_uuid={call_uuid[:12]} — asking to repeat")
         return await _error_response(call_uuid, company_id, lead_id, mode,
@@ -3428,7 +3434,7 @@ async def _error_response(
 
 # ── Deepgram transcription ────────────────────────────────────────────────────
 
-async def _transcribe_url(audio_url: str) -> str:
+async def _transcribe_url(audio_url: str, vobiz_auth_id: str, vobiz_auth_token: str) -> str:
     try:
         api_key = settings.DEEPGRAM_API_KEY or ""
         if not api_key:
@@ -3436,16 +3442,19 @@ async def _transcribe_url(audio_url: str) -> str:
             return ""
 
         logger.info(f"Downloading recording: {audio_url}")
-        # FIX: was hardcoded as a literal (previously "MA_OBGHKHK4", then
-        # "MA_52FARPL9") — broke every time the account/sub-account this
-        # was hardcoded for wasn't the one Vobiz actually routed the call
-        # through, since Vobiz then 401s the recording download. Now read
-        # from settings (backed by .env: VOBIZ_AUTH_ID / VOBIZ_AUTH_TOKEN).
-        vobiz_auth_id    = getattr(settings, "VOBIZ_AUTH_ID", "") or ""
-        vobiz_auth_token = getattr(settings, "VOBIZ_AUTH_TOKEN", "") or ""
-        if not vobiz_auth_id:
-            logger.error("VOBIZ_AUTH_ID not set — add it to .env, recording download will 401")
-        logger.info(f"Vobiz auth | id={vobiz_auth_id or 'EMPTY — add VOBIZ_AUTH_ID to .env'} | token={'SET' if vobiz_auth_token else 'EMPTY — add VOBIZ_AUTH_TOKEN to .env'}")
+        # Was hardcoded as a literal (previously "MA_OBGHKHK4", then
+        # "MA_52FARPL9"), then later read from the single global
+        # settings.VOBIZ_AUTH_ID/TOKEN in .env — both wrong for a
+        # multi-tenant deployment: a company using its own separate
+        # Vobiz account would 401 downloading its own recordings,
+        # since this was always authenticating as whichever single
+        # account was hardcoded/in .env, never as the company that
+        # actually owns the call. Now takes the company's own
+        # credentials as required arguments — see _process_recording_turn
+        # above, which is the only caller and loads them from the
+        # Company row before calling this.
+        if not vobiz_auth_id or not vobiz_auth_token:
+            logger.error("No Vobiz credentials for this company — set vobiz_auth_id/vobiz_auth_token in Settings; recording download will 401")
 
         audio_resp = await _client().get(
             audio_url,

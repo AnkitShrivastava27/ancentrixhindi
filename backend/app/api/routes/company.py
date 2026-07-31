@@ -244,7 +244,19 @@ def _dict(c: Company) -> dict:
         "greeting_outbound_hi": c.greeting_outbound_hi,
         "forward_number": c.forward_number,
         "vobiz_auth_id": c.vobiz_auth_id,
-        "vobiz_auth_token": c.vobiz_auth_token,
+        # Never return the raw token — this used to send the real secret
+        # straight back to the browser on every GET/POST/PATCH response,
+        # which defeats the point of encrypting it at rest (anything that
+        # can see the API response — dev tools, a proxy, a stray
+        # console.log — saw the real value). Instead: a masked hint plus
+        # whether one is set at all. The frontend's Settings form should
+        # treat this field as "type a new value to change it, leave blank
+        # to keep the existing one" — the same pattern as a password
+        # field — rather than pre-filling it with something editable.
+        "vobiz_auth_token_set": bool(c.vobiz_auth_token),
+        "vobiz_auth_token_masked": (
+            f"••••{c.vobiz_auth_token[-4:]}" if c.vobiz_auth_token and len(c.vobiz_auth_token) >= 4 else None
+        ),
         "vobiz_phone_number": c.vobiz_phone_number,
         "license_key": c.license_key,
         "license_tier": c.license_tier,

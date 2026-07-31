@@ -28,6 +28,7 @@ Only used when the company's resolved TTS provider is "sarvam" or
 since Vobiz has no standalone synthesize API to plug in here.
 """
 import logging
+from datetime import datetime
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -54,7 +55,8 @@ async def run_vobiz_stream_pipeline(
     from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-    from pipecat.frames.frames import TTSSpeakFrame
+    from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, TextFrame
+    from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -123,11 +125,15 @@ async def run_vobiz_stream_pipeline(
     gender = (getattr(company, "voice_gender", None) or "female").lower()
     voice_override = getattr(company, "tts_voice", None)
 
-    # Prefer this company's own Vobiz credentials (multi-tenant — each
-    # customer can have their own Vobiz sub-account); fall back to the
-    # global .env credentials if the company hasn't set their own.
-    vobiz_auth_id = getattr(company, "vobiz_auth_id", None) or settings.VOBIZ_AUTH_ID or ""
-    vobiz_auth_token = getattr(company, "vobiz_auth_token", None) or settings.VOBIZ_AUTH_TOKEN or ""
+    # Per-company Vobiz credentials ONLY — no fallback to a shared/global
+    # .env credential. Each customer must set their own vobiz_auth_id/
+    # vobiz_auth_token in Settings; without it, this stream's TTS
+    # (Vobiz's own Speak Text API, used to send audio back on this same
+    # call) will 401 rather than silently running under your account.
+    vobiz_auth_id = getattr(company, "vobiz_auth_id", None) or ""
+    vobiz_auth_token = getattr(company, "vobiz_auth_token", None) or ""
+    if not vobiz_auth_id or not vobiz_auth_token:
+        logger.error(f"call_uuid={call_uuid[:12]} | No Vobiz credentials set for this company — set vobiz_auth_id/vobiz_auth_token in Settings")
 
     # ── Transport: Vobiz <-> Pipecat over the raw WebSocket ────────────────
     serializer = VobizFrameSerializer(
@@ -210,11 +216,38 @@ async def run_vobiz_stream_pipeline(
         ),
     )
 
+    class _LiveTap(FrameProcessor):
+        """Passes every frame through completely unchanged — this must
+        never alter the pipeline's behavior, only observe it. Mirrors
+        user transcript / assistant text to the Live Call tab via
+        live_broadcaster. This is the reason the Live Call tab used to
+        just say "Connecting" forever: nothing in the streaming pipeline
+        (the actual call path since USE_STREAMING_CALLS=true is the
+        default) ever called live_broadcaster at all — those calls only
+        existed in the old Record+Gather webhook flow, which isn't what
+        real calls go through anymore."""
+        def __init__(self, kind: str):
+            super().__init__()
+            self._kind = kind
+
+        async def process_frame(self, frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+            text = getattr(frame, "text", None)
+            if text and isinstance(frame, (TranscriptionFrame, TextFrame)):
+                from app.api.routes.live_ws import live_broadcaster
+                if self._kind == "user":
+                    await live_broadcaster.user_msg(company.id, call_uuid, text)
+                else:
+                    await live_broadcaster.ai_msg(company.id, call_uuid, text)
+            await self.push_frame(frame, direction)
+
     pipeline = Pipeline([
         transport.input(),
         stt,
+        _LiveTap("user"),
         context_aggregator.user(),
         llm,
+        _LiveTap("ai"),
         tts,
         transport.output(),
         context_aggregator.assistant(),
@@ -237,14 +270,26 @@ async def run_vobiz_stream_pipeline(
     # a full LLM round trip before the caller hears anything, AND the LLM
     # would generate its own opening line instead of speaking the actual
     # configured `greeting` text.
+    _call_started_at = datetime.utcnow()
+
     @transport.event_handler("on_client_connected")
     async def _on_connected(_transport, _client):
         logger.info(f"Vobiz stream pipeline — client connected, speaking greeting | call_uuid={call_uuid[:12]}")
+        from app.api.routes.live_ws import live_broadcaster
+        await live_broadcaster.call_answered(company.id, call_uuid)
         await task.queue_frames([TTSSpeakFrame(text=greeting)])
+        # Greeting is spoken directly (see comment above) rather than
+        # through the LLM, so it never passes through the _LiveTap("ai")
+        # hook in the pipeline — mirror it to Live Call manually so the
+        # transcript shown there doesn't have a gap at the very start.
+        await live_broadcaster.ai_msg(company.id, call_uuid, greeting)
 
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(_transport, _client):
         logger.info(f"Vobiz stream pipeline — client disconnected | call_uuid={call_uuid[:12]}")
+        from app.api.routes.live_ws import live_broadcaster
+        duration = int((datetime.utcnow() - _call_started_at).total_seconds())
+        await live_broadcaster.call_end(company.id, call_uuid, duration)
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)

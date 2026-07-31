@@ -108,22 +108,19 @@ def estimate_speech_seconds(
 class VobizService:
 
     def _creds(self, company: Any = None) -> Dict[str, str]:
-        """Per-company credentials, falling back to global config —
-        same override pattern as Telnyx's connection_id/phone_number."""
-        from app.core.config import settings
-        auth_id = (
-            (getattr(company, "vobiz_auth_id", None) if company else None)
-            or settings.VOBIZ_AUTH_ID or ""
-        )
-        auth_token = (
-            (getattr(company, "vobiz_auth_token", None) if company else None)
-            or settings.VOBIZ_AUTH_TOKEN or ""
-        )
-        phone = (
-            (getattr(company, "vobiz_phone_number", None) if company else None)
-            or settings.VOBIZ_PHONE_NUMBER or ""
-        )
-        return {"auth_id": auth_id, "auth_token": auth_token, "phone": phone}
+        """Per-company credentials ONLY — no fallback to a shared/global
+        credential from .env anymore. Every company must set its own
+        vobiz_auth_id/vobiz_auth_token/vobiz_phone_number in Settings
+        before it can make or receive calls. This used to fall back to
+        settings.VOBIZ_AUTH_ID/TOKEN/PHONE_NUMBER, which meant a company
+        with no credentials of its own would silently place calls (and
+        rack up charges) on whichever account happened to be in .env —
+        wrong for a genuinely multi-tenant deployment where each
+        customer brings their own Vobiz account."""
+        auth_id = getattr(company, "vobiz_auth_id", None) if company else None
+        auth_token = getattr(company, "vobiz_auth_token", None) if company else None
+        phone = getattr(company, "vobiz_phone_number", None) if company else None
+        return {"auth_id": auth_id or "", "auth_token": auth_token or "", "phone": phone or ""}
 
     def _make_client(self, auth_id: str, auth_token: str) -> httpx.AsyncClient:
         return httpx.AsyncClient(
