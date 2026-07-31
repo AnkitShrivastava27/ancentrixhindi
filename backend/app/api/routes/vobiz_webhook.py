@@ -2806,7 +2806,7 @@ async def serve_tts_audio(token: str):
 # ── Sarvam TTS ────────────────────────────────────────────────────────────────
 # MODEL: bulbul:v3 (see module docstring for why this replaced bulbul:v2).
 # v3 speaker names are NOT shared with v2 — do not mix them.
-SARVAM_DEFAULT_VOICE = {"female": "sophia", "male": "shubh"}
+SARVAM_DEFAULT_VOICE = {"female": "neha", "male": "shubh"}
 # other female v3 speakers worth trying: "priya", "kavya", "amelia"
 # other male v3 speakers worth trying: "aditya", "advait", "ashutosh"
 
@@ -2820,7 +2820,7 @@ async def _synthesize_sarvam(text: str, company: Company) -> Optional[bytes]:
         return None
 
     gender  = (getattr(company, "voice_gender", None) or "female").lower()
-    speaker = getattr(company, "tts_voice", None) or SARVAM_DEFAULT_VOICE.get(gender, "sophia")
+    speaker = getattr(company, "tts_voice", None) or SARVAM_DEFAULT_VOICE.get(gender, "neha")
 
     try:
         resp = await _client().post(
