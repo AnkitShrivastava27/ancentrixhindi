@@ -36,6 +36,19 @@ def run_async(coro):
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
             loop.run_until_complete(loop.shutdown_asyncgens())
+            # Dispose the DB engine's connection pool WHILE this loop is
+            # still open. Every call to run_async() creates a fresh event
+            # loop, but app.core.database's `engine` is a single global
+            # object — its pooled asyncpg connections are permanently
+            # tied to whatever loop was running when they were opened.
+            # Without this, the pool from THIS run's loop survives into
+            # the next scheduled task's brand-new loop, and asyncpg fails
+            # with "Event loop is closed" / "attached to a different
+            # loop" — reliably, on every run after the first, since each
+            # one gets its own loop. Disposing here forces the next call
+            # to open clean connections under its own (also new) loop.
+            from app.core.database import engine
+            loop.run_until_complete(engine.dispose())
         except Exception:
             pass
         finally:
