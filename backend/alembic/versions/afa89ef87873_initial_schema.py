@@ -1,6 +1,6 @@
 """initial schema
 
-Revision ID: 430de800a2d9
+Revision ID:afa89ef87873
 Revises: 
 Create Date: 2026-07-27 06:26:20.352187
 
@@ -13,7 +13,7 @@ import app.core.crypto
 
 
 # revision identifiers, used by Alembic.
-revision: str = '430de800a2d9'
+revision: str = 'afa89ef87873'
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
