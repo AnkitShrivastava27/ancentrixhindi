@@ -437,7 +437,7 @@ function renderUsersTable() {
   wrap.innerHTML = `
     <table>
       <thead><tr>
-        <th>Name</th><th>Email</th><th>Company</th><th>License</th><th>Status</th><th>Joined</th><th></th>
+        <th>Name</th><th>Email</th><th>Company</th><th>License</th><th>Status</th><th>Demo</th><th>Joined</th><th></th>
       </tr></thead>
       <tbody>
         ${rows.map(u => `
@@ -450,18 +450,49 @@ function renderUsersTable() {
               ${u.license_status ? `<span class="badge ${badgeClass(u.license_status)}" style="margin-left:6px">${u.license_status}</span>` : ''}
             </td>
             <td><span class="badge ${u.is_active ? 'badge-active' : 'badge-revoked'}">${u.is_active ? 'active' : 'disabled'}</span></td>
+            <td>
+              ${u.is_demo_account
+                ? `<span class="badge badge-active">demo</span> <span class="muted mono" style="margin-left:4px">${u.demo_calls_remaining ?? 0} left</span>`
+                : `<span class="muted">—</span>`}
+            </td>
             <td class="muted">${fmtDate(u.created_at)}</td>
             <td>
               <button class="btn-secondary" style="padding:5px 12px;font-size:12px;margin-right:6px" onclick="resetUserPassword('${u.id}','${escapeHtml(u.email)}')">Reset password</button>
               ${u.is_active
-                ? `<button class="btn-danger" style="padding:5px 12px;font-size:12px" onclick="toggleUserActive('${u.id}','${escapeHtml(u.email)}',false)">Disable</button>`
-                : `<button class="btn-secondary" style="padding:5px 12px;font-size:12px" onclick="toggleUserActive('${u.id}','${escapeHtml(u.email)}',true)">Enable</button>`}
+                ? `<button class="btn-danger" style="padding:5px 12px;font-size:12px;margin-right:6px" onclick="toggleUserActive('${u.id}','${escapeHtml(u.email)}',false)">Disable</button>`
+                : `<button class="btn-secondary" style="padding:5px 12px;font-size:12px;margin-right:6px" onclick="toggleUserActive('${u.id}','${escapeHtml(u.email)}',true)">Enable</button>`}
+              ${u.company_id
+                ? `<button class="btn-secondary" style="padding:5px 12px;font-size:12px" onclick="setDemoAccount('${u.company_id}','${escapeHtml(u.email)}',${u.is_demo_account ? 'true' : 'false'},${u.demo_calls_remaining ?? 0})">${u.is_demo_account ? 'Reset demo calls' : 'Make demo account'}</button>`
+                : ''}
             </td>
           </tr>
         `).join('')}
       </tbody>
     </table>
   `;
+}
+
+async function setDemoAccount(companyId, email, isAlreadyDemo, currentRemaining) {
+  const promptMsg = isAlreadyDemo
+    ? `Reset demo call counter for ${email}?\n\nHow many calls should this demo login be able to make before it's blocked again?`
+    : `Turn ${email}'s account into the shared demo account?\n\nOnce this is on, leave Vobiz Auth ID / Token / Phone blank in that account's Settings → Telephony — it will then use the shared Vobiz credentials from your backend's .env instead of needing its own.\n\nHow many calls should this demo login be able to make?`;
+  const input = prompt(promptMsg, isAlreadyDemo ? String(currentRemaining) : '5');
+  if (input === null) return;
+  const calls_remaining = parseInt(input, 10);
+  if (isNaN(calls_remaining) || calls_remaining < 0) { toast('Enter a whole number of 0 or more', false); return; }
+
+  try {
+    const body = { calls_remaining };
+    if (!isAlreadyDemo) body.is_demo_account = true;
+    await api(`/admin/companies/${companyId}/demo-calls`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    toast(isAlreadyDemo ? `Demo calls reset for ${email}` : `${email} is now the demo account`);
+    await loadUsers();
+  } catch (e) {
+    toast('Failed: ' + e.message, false);
+  }
 }
 
 async function resetUserPassword(userId, email) {

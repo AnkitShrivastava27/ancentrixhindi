@@ -195,10 +195,13 @@ async def list_users():
                 "full_name": u.full_name,
                 "is_active": u.is_active,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
+                "company_id": company.id if company else None,
                 "company_name": company.name if company else None,
                 "license_key": company.license_key if company else None,
                 "license_tier": company.license_tier if company else None,
                 "license_status": company.license_status if company else None,
+                "is_demo_account": bool(company.is_demo_account) if company else False,
+                "demo_calls_remaining": company.demo_calls_remaining if company else None,
             })
     return {"total": len(out), "users": out}
 
