@@ -124,6 +124,17 @@ class Company(Base):
     vobiz_auth_token   = Column(EncryptedString)
     vobiz_phone_number = Column(String)   # India DID, E.164 — not a secret, left plain
 
+    # ── Demo accounts ─────────────────────────────────────────────────
+    # A single shared login (e.g. demouser@ancentrix.com) handed out to
+    # prospects one at a time. is_demo_account gates the check in
+    # app/tasks/tasks.py's _async_outbound_call — real customer accounts
+    # are unaffected regardless of what demo_calls_remaining holds.
+    # Admin resets demo_calls_remaining back up via POST
+    # /api/v1/admin/companies/{id}/demo-calls before handing the login to
+    # the next prospect.
+    is_demo_account       = Column(Boolean, default=False)
+    demo_calls_remaining  = Column(Integer, default=0)
+
     # License — one-time activation key (see app.services.license_service)
     license_key        = Column(String)
     license_domain      = Column(String)

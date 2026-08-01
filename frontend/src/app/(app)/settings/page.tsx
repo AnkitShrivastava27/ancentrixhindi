@@ -12,8 +12,6 @@ export default function SettingsPage() {
   const [saving, setSaving]   = useState(false)
   const [isNew, setIsNew]     = useState(false)
   const [tab, setTab]         = useState('company')
-  const [companyLang, setCompanyLang] = useState<'en'|'hi'>('en')
-  const [prodLang, setProdLang]       = useState<'en'|'hi'>('en')
   const [f, setF] = useState({
     name:'', industry:'', description:'', description_hi:'', services:'', services_hi:'', faqs:'', faqs_hi:'', location:'', contact_number:'', forward_number:'', website:'',
     agent_name:'Aria', voice_gender:'female', voice_language:'hi-IN', tts_provider:'vobiz',
@@ -75,13 +73,6 @@ export default function SettingsPage() {
   const grid2 = (a: React.ReactNode, b: React.ReactNode) => (
     <div className={styles.grid2}>{a}{b}</div>
   )
-  const langToggle = (val: 'en'|'hi', onChange: (v:'en'|'hi') => void) => (
-    <div className={styles.langToggle}>
-      {[{ v:'en' as const, l:'🌐 English (fallback)' }, { v:'hi' as const, l:'🇮🇳 Hindi/Hinglish (Vobiz)' }].map(o => (
-        <button key={o.v} onClick={() => onChange(o.v)} className={`${styles.langBtn} ${val===o.v ? styles.langBtnActive : ''}`}>{o.l}</button>
-      ))}
-    </div>
-  )
 
   return (
     <div className={styles.page}>
@@ -104,16 +95,9 @@ export default function SettingsPage() {
           <Input label="Company Name *" value={f.name} onChange={e => set('name', e.target.value)} />,
           <Input label="Industry" value={f.industry} onChange={e => set('industry', e.target.value)} placeholder="SaaS, Real Estate…" />
         )}
-        {langToggle(companyLang, setCompanyLang)}
-        {companyLang === 'en' ? <>
-          <Textarea label="Description" value={f.description} onChange={e => set('description', e.target.value)} rows={3} placeholder="What your company does…" />
-          <Textarea label="Services" value={f.services} onChange={e => set('services', e.target.value)} rows={3} />
-          <Textarea label="FAQs" value={f.faqs} onChange={e => set('faqs', e.target.value)} rows={4} placeholder={"Q: What are your hours?\nA: Mon–Sat 9am–6pm"} />
-        </> : <>
-          <Textarea label="Description (Hindi/Hinglish)" value={f.description_hi} onChange={e => set('description_hi', e.target.value)} rows={3} placeholder="Hand-written Hindi/Hinglish — used only on Vobiz calls. Falls back to the English description above if left blank." />
-          <Textarea label="Services (Hindi/Hinglish)" value={f.services_hi} onChange={e => set('services_hi', e.target.value)} rows={3} />
-          <Textarea label="FAQs (Hindi/Hinglish)" value={f.faqs_hi} onChange={e => set('faqs_hi', e.target.value)} rows={4} placeholder={"Q: Aapke office ka time kya hai?\nA: Mon–Sat subah 9 se shaam 6"} />
-        </>}
+        <Textarea label="Description" value={f.description_hi} onChange={e => set('description_hi', e.target.value)} rows={3} placeholder="Hindi/Hinglish — what your company does…" />
+        <Textarea label="Services" value={f.services_hi} onChange={e => set('services_hi', e.target.value)} rows={3} />
+        <Textarea label="FAQs" value={f.faqs_hi} onChange={e => set('faqs_hi', e.target.value)} rows={4} placeholder={"Q: Aapke office ka time kya hai?\nA: Mon–Sat subah 9 se shaam 6"} />
         {grid2(
           <Input label="Location" value={f.location} onChange={e => set('location', e.target.value)} placeholder="Mumbai, India" />,
           <Input label="Website" value={f.website} onChange={e => set('website', e.target.value)} placeholder="https://…" />
@@ -146,15 +130,10 @@ export default function SettingsPage() {
             options={[{ value:'sarvam', label:'Sarvam AI (Hindi/Hinglish — recommended)' },{ value:'vobiz', label:'Vobiz (native Speak)' }, { value:'gtts', label:'gTTS (fallback)' }]} />
         </div>
         <p className={styles.smallNote}>Calls are always Hindi/Hinglish via Vobiz's native voices.</p>
-        <div className={styles.subLabel}>English fallback greetings</div>
-        <Textarea label="Inbound Greeting" value={f.greeting_inbound} onChange={e => set('greeting_inbound', e.target.value)} rows={2}
-          placeholder={`Hey there! Thanks for calling ${f.name||'your company'}, I'm ${f.agent_name}…`} />
-        <Textarea label="Outbound Greeting" value={f.greeting_outbound} onChange={e => set('greeting_outbound', e.target.value)} rows={2}
-          placeholder="Hey {lead_name}! This is {agent_name} calling from…" />
-        <div className={styles.subLabelSpaced}>🇮🇳 Vobiz Greetings (Hindi/Hinglish)</div>
-        <Textarea label="Inbound Greeting (Hindi)" value={f.greeting_inbound_hi} onChange={e => set('greeting_inbound_hi', e.target.value)} rows={2}
+        <div className={styles.subLabel}>🇮🇳 Greetings (Hindi/Hinglish)</div>
+        <Textarea label="Inbound Greeting" value={f.greeting_inbound_hi} onChange={e => set('greeting_inbound_hi', e.target.value)} rows={2}
           placeholder={`Namaste! Main ${f.agent_name} hoon, ${f.name||'your company'} se…`} />
-        <Textarea label="Outbound Greeting (Hindi)" value={f.greeting_outbound_hi} onChange={e => set('greeting_outbound_hi', e.target.value)} rows={2}
+        <Textarea label="Outbound Greeting" value={f.greeting_outbound_hi} onChange={e => set('greeting_outbound_hi', e.target.value)} rows={2}
           placeholder="Namaste {lead_name} ji! Main {agent_name} bol raha hoon…" />
       </>)}
 
@@ -164,43 +143,26 @@ export default function SettingsPage() {
           <Input label="Active Product to Pitch" value={f.active_product} onChange={e => set('active_product', e.target.value)} placeholder="Must match a product name below" />
         </>, 'Catalogue')}
 
-        {langToggle(prodLang, setProdLang)}
-
         {f.products.map((p, i) => (
           <div key={i} className={styles.productCard}>
             <div className={styles.productHead}>
-              <span className={styles.productHeadTitle}>Product {i+1}: {p.name||'Unnamed'}</span>
+              <span className={styles.productHeadTitle}>Product {i+1}: {p.name_hi || p.name || 'Unnamed'}</span>
               <button onClick={() => set('products', f.products.filter((_: any, idx: number) => idx !== i))} className={styles.productRemoveBtn}>Remove</button>
             </div>
             <div className={styles.productBody}>
-              {prodLang === 'en' ? <>
-                {grid2(
-                  <Input label="Name *" value={p.name} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, name:e.target.value} : x))} />,
-                  <Input label="Price (shared across languages)" value={p.price} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, price:e.target.value} : x))} placeholder="₹999/month" />
-                )}
-                <Textarea label="Description" value={p.description} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, description:e.target.value} : x))} rows={2} />
-                <Input label="Features (comma separated)"
-                  value={Array.isArray(p.features) ? p.features.join(', ') : ''}
-                  onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, features:e.target.value.split(',').map((s: string) => s.trim())} : x))}
-                  placeholder="Feature 1, Feature 2, Feature 3" />
-              </> : <>
-                {grid2(
-                  <Input label="Name (Hindi)" value={p.name_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, name_hi:e.target.value} : x))} placeholder={p.name||'Falls back to English name'} />,
-                  <div>
-                    <div className={styles.priceReadLabel}>Price (shared, edit on English tab)</div>
-                    <div className={styles.priceReadValue}>{p.price || '—'}</div>
-                  </div>
-                )}
-                <Textarea label="Description (Hindi/Hinglish)" value={p.description_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, description_hi:e.target.value} : x))} rows={2} placeholder="Falls back to English description if left blank" />
-                <Input label="Features (Hindi, comma separated)"
-                  value={Array.isArray(p.features_hi) ? p.features_hi.join(', ') : ''}
-                  onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, features_hi:e.target.value.split(',').map((s: string) => s.trim())} : x))}
-                  placeholder="Falls back to English features if left blank" />
-              </>}
+              {grid2(
+                <Input label="Name *" value={p.name_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, name_hi:e.target.value} : x))} placeholder="Namaste Package" />,
+                <Input label="Price" value={p.price} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, price:e.target.value} : x))} placeholder="₹999/month" />
+              )}
+              <Textarea label="Description" value={p.description_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, description_hi:e.target.value} : x))} rows={2} placeholder="Hindi/Hinglish — used on Vobiz calls" />
+              <Input label="Features (comma separated)"
+                value={Array.isArray(p.features_hi) ? p.features_hi.join(', ') : ''}
+                onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, features_hi:e.target.value.split(',').map((s: string) => s.trim())} : x))}
+                placeholder="Feature 1, Feature 2, Feature 3" />
             </div>
           </div>
         ))}
-        <button onClick={() => set('products', [...f.products, { name:'', description:'', price:'', features:[], name_hi:'', description_hi:'', features_hi:[] }])}
+        <button onClick={() => set('products', [...f.products, { name_hi:'', description_hi:'', price:'', features_hi:[] }])}
           className={styles.addProductBtn}>
           + Add Product
         </button>

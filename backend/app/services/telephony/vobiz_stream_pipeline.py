@@ -33,6 +33,17 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Auto call-cut on caller silence ─────────────────────────────────────────
+# If the callee picks up and never says anything (or goes silent mid-call),
+# the pipeline previously just sat there indefinitely — the caller could
+# leave the line open with dead air for the whole call, burning minutes
+# with no way to end automatically. SILENCE_NUDGE_SECONDS is how long to
+# wait after the last thing we heard (or the greeting finishing) before
+# playing one "are you there?" prompt; SILENCE_HANGUP_SECONDS is how much
+# additional silence after that nudge before the call is auto-disconnected.
+SILENCE_NUDGE_SECONDS: float = 10.0
+SILENCE_HANGUP_SECONDS: float = 10.0  # measured from the nudge, not from the original silence start
+
 
 async def run_vobiz_stream_pipeline(
     websocket,
@@ -55,7 +66,8 @@ async def run_vobiz_stream_pipeline(
     from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-    from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, TextFrame
+    from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, TextFrame, EndFrame
+    import asyncio
     from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.runner import PipelineRunner
@@ -125,13 +137,22 @@ async def run_vobiz_stream_pipeline(
     gender = (getattr(company, "voice_gender", None) or "female").lower()
     voice_override = getattr(company, "tts_voice", None)
 
-    # Per-company Vobiz credentials ONLY — no fallback to a shared/global
-    # .env credential. Each customer must set their own vobiz_auth_id/
-    # vobiz_auth_token in Settings; without it, this stream's TTS
-    # (Vobiz's own Speak Text API, used to send audio back on this same
-    # call) will 401 rather than silently running under your account.
+    # Per-company Vobiz credentials for every real customer — no fallback
+    # to a shared/global .env credential for them. Each customer must set
+    # their own vobiz_auth_id/vobiz_auth_token in Settings; without it,
+    # this stream's TTS (Vobiz's own Speak Text API, used to send audio
+    # back on this same call) will 401 rather than silently running under
+    # someone else's account.
+    #
+    # ONE exception: the shared demo account (company.is_demo_account).
+    # Falls back to settings.VOBIZ_AUTH_ID/VOBIZ_AUTH_TOKEN from .env only
+    # for that account, and only for whichever field is left blank — real
+    # customer accounts are unaffected.
     vobiz_auth_id = getattr(company, "vobiz_auth_id", None) or ""
     vobiz_auth_token = getattr(company, "vobiz_auth_token", None) or ""
+    if getattr(company, "is_demo_account", False) and (not vobiz_auth_id or not vobiz_auth_token):
+        vobiz_auth_id = vobiz_auth_id or (settings.VOBIZ_AUTH_ID or "")
+        vobiz_auth_token = vobiz_auth_token or (settings.VOBIZ_AUTH_TOKEN or "")
     if not vobiz_auth_id or not vobiz_auth_token:
         logger.error(f"call_uuid={call_uuid[:12]} | No Vobiz credentials set for this company — set vobiz_auth_id/vobiz_auth_token in Settings")
 
@@ -216,16 +237,58 @@ async def run_vobiz_stream_pipeline(
         ),
     )
 
+    # Mutable holder (plain dict, not a local var) so the nested watchdog
+    # coroutine and _LiveTap.process_frame above can both read/write the
+    # same state without needing `nonlocal` on every access.
+    _silence_state = {"last_activity": datetime.utcnow(), "nudged": False}
+    _watchdog_holder: dict = {}
+
+    async def _silence_watchdog() -> None:
+        """Auto-disconnects a call where the caller picked up but never
+        said anything, or went silent partway through — see the module
+        docstring above SILENCE_NUDGE_SECONDS for why this exists. Plays
+        one gentle nudge, then hangs up if there's still no response."""
+        try:
+            while True:
+                await asyncio.sleep(1.0)
+                idle = (datetime.utcnow() - _silence_state["last_activity"]).total_seconds()
+                if not _silence_state["nudged"] and idle >= SILENCE_NUDGE_SECONDS:
+                    _silence_state["nudged"] = True
+                    _silence_state["last_activity"] = datetime.utcnow()
+                    nudge_text = (
+                        "Hello? Are you still there?" if mode == "english"
+                        else "Hello? Kya aap wahin hain? Main aapki awaaz nahi sun paa raha hoon."
+                    )
+                    logger.info(f"Silence nudge | call_uuid={call_uuid[:12]}")
+                    await task.queue_frames([TTSSpeakFrame(text=nudge_text)])
+                elif _silence_state["nudged"] and idle >= SILENCE_HANGUP_SECONDS:
+                    logger.info(f"Silence timeout — auto-disconnecting call | call_uuid={call_uuid[:12]}")
+                    farewell = (
+                        "I'm not getting a response, so I'll disconnect now. Thank you!" if mode == "english"
+                        else "Lagta hai koi jawab nahi mil raha, isliye main call disconnect kar raha hoon. Dhanyavaad!"
+                    )
+                    await task.queue_frames([TTSSpeakFrame(text=farewell)])
+                    await asyncio.sleep(2.5)  # let the farewell audio actually play before hanging up
+                    await task.queue_frames([EndFrame()])
+                    return
+        except asyncio.CancelledError:
+            pass
+
     class _LiveTap(FrameProcessor):
         """Passes every frame through completely unchanged — this must
-        never alter the pipeline's behavior, only observe it. Mirrors
-        user transcript / assistant text to the Live Call tab via
-        live_broadcaster. This is the reason the Live Call tab used to
-        just say "Connecting" forever: nothing in the streaming pipeline
-        (the actual call path since USE_STREAMING_CALLS=true is the
-        default) ever called live_broadcaster at all — those calls only
-        existed in the old Record+Gather webhook flow, which isn't what
-        real calls go through anymore."""
+        never alter the pipeline's behavior, only observe it. Does two
+        things with user/assistant text as it flows through:
+          1. Mirrors it to the Live Call tab via live_broadcaster (fixes
+             the "just says Connecting" issue — see earlier fix).
+          2. Records it via session_manager.add_turn() — this is what
+             builds session["history"], which post-call analysis below
+             reads to build the transcript. Nothing was calling
+             add_turn() before, so history stayed [] for the whole call
+             — which is the actual reason summary/sentiment/lead-status
+             were always blank: analyze_call() either never ran (see
+             below) or would have gotten an empty transcript even if it
+             had.
+        """
         def __init__(self, kind: str):
             super().__init__()
             self._kind = kind
@@ -235,7 +298,14 @@ async def run_vobiz_stream_pipeline(
             text = getattr(frame, "text", None)
             if text and isinstance(frame, (TranscriptionFrame, TextFrame)):
                 from app.api.routes.live_ws import live_broadcaster
+                from app.services.telephony.call_session import session_manager
+                role = "user" if self._kind == "user" else "assistant"
+                await session_manager.add_turn(call_uuid, role, text)
                 if self._kind == "user":
+                    # Caller actually said something — reset the silence
+                    # watchdog below so it doesn't nudge/hang up mid-turn.
+                    _silence_state["last_activity"] = datetime.utcnow()
+                    _silence_state["nudged"] = False
                     await live_broadcaster.user_msg(company.id, call_uuid, text)
                 else:
                     await live_broadcaster.ai_msg(company.id, call_uuid, text)
@@ -280,16 +350,106 @@ async def run_vobiz_stream_pipeline(
         await task.queue_frames([TTSSpeakFrame(text=greeting)])
         # Greeting is spoken directly (see comment above) rather than
         # through the LLM, so it never passes through the _LiveTap("ai")
-        # hook in the pipeline — mirror it to Live Call manually so the
-        # transcript shown there doesn't have a gap at the very start.
+        # hook in the pipeline — mirror it to Live Call AND record it in
+        # session history manually so the transcript used for post-call
+        # analysis doesn't start with a gap either.
+        from app.services.telephony.call_session import session_manager
+        await session_manager.add_turn(call_uuid, "assistant", greeting)
         await live_broadcaster.ai_msg(company.id, call_uuid, greeting)
+
+        # Start the silence timer fresh from right after the greeting —
+        # the caller has now heard something and it's their turn to
+        # respond, so the "did they say anything at all" clock starts
+        # here rather than at socket-connect time.
+        _silence_state["last_activity"] = datetime.utcnow()
+        _silence_state["nudged"] = False
+        _watchdog_holder["task"] = asyncio.create_task(_silence_watchdog())
 
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(_transport, _client):
         logger.info(f"Vobiz stream pipeline — client disconnected | call_uuid={call_uuid[:12]}")
+        watchdog_task = _watchdog_holder.get("task")
+        if watchdog_task:
+            watchdog_task.cancel()
         from app.api.routes.live_ws import live_broadcaster
         duration = int((datetime.utcnow() - _call_started_at).total_seconds())
         await live_broadcaster.call_end(company.id, call_uuid, duration)
+
+        # Post-call analysis (summary/sentiment/intent/lead-status) — was
+        # ONLY ever wired into vobiz_webhook.py's old Record+Gather flow,
+        # which stopped being the active call path when this streaming
+        # pipeline became the default (USE_STREAMING_CALLS=true). It
+        # simply never ran for any real call made through this file,
+        # which is why Call.summary/Call.sentiment stayed blank and
+        # Lead.status never moved — not a bug in analyze_call() itself,
+        # it just had no caller in the code path that's actually used.
+        try:
+            from app.services.telephony.call_session import session_manager
+            from app.services.llm.llm_service import llm_service
+            from app.core.database import AsyncSessionLocal
+            from app.models.models import CallLog, Lead
+            from sqlalchemy import select
+
+            session = await session_manager.end(call_uuid)
+            if session:
+                history = session.get("history", [])
+                call_log_id = session.get("call_log_id")
+                lead_id = session.get("lead_id")
+
+                transcript = "\n".join(
+                    f"{'Agent' if m['role'] == 'assistant' else 'Caller'}: {m['content']}"
+                    for m in history
+                )
+
+                analysis = {}
+                if transcript:
+                    try:
+                        analysis = await llm_service.analyze_call(
+                            transcript, f"{company.name} — {company.description or ''}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Post-call analysis error | call_uuid={call_uuid[:12]}: {e}")
+
+                async with AsyncSessionLocal() as db:
+                    if call_log_id:
+                        r = await db.execute(select(CallLog).where(CallLog.id == call_log_id))
+                        log = r.scalar_one_or_none()
+                        if log:
+                            log.status = "completed"
+                            log.ended_at = datetime.utcnow()
+                            log.duration_seconds = duration
+                            log.conversation_history = history
+                            log.transcript = transcript
+                            log.summary = analysis.get("summary", "")
+                            log.sentiment = analysis.get("sentiment", "")
+                            log.intent = analysis.get("intent", "")
+                            log.lead_status_after = analysis.get("lead_status", "")
+                            log.transferred_to_human = analysis.get("transferred_to_human", False)
+                            log.updated_at = datetime.utcnow()
+
+                    if lead_id:
+                        r = await db.execute(select(Lead).where(Lead.id == lead_id))
+                        lead = r.scalar_one_or_none()
+                        if lead:
+                            valid_statuses = ["new", "contacted", "interested", "warm", "cold",
+                                               "closed_won", "closed_lost", "do_not_call"]
+                            new_status = analysis.get("lead_status")
+                            if new_status and new_status in valid_statuses:
+                                lead.status = new_status
+                            interest = analysis.get("interest_level")
+                            if interest is not None:
+                                lead.interest_level = float(interest)
+                            key_info = analysis.get("key_info", {})
+                            if key_info:
+                                lead.key_info = {**(lead.key_info or {}),
+                                                  **{k: v for k, v in key_info.items() if v}}
+                            lead.updated_at = datetime.utcnow()
+
+                    await db.commit()
+                logger.info(f"Post-call analysis saved | call_uuid={call_uuid[:12]} | sentiment={analysis.get('sentiment')} | lead_status={analysis.get('lead_status')}")
+        except Exception as e:
+            logger.error(f"Post-call analysis/save failed | call_uuid={call_uuid[:12]}: {e}", exc_info=True)
+
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)

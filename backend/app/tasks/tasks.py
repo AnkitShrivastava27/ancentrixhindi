@@ -105,6 +105,29 @@ async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, pr
             # network blip doesn't halt a live campaign.
             logger.warning(f"License gate check failed (allowing call): {e}")
 
+        # ── Demo account gate: block + decrement the shared counter ────────────
+        # Real customer accounts have is_demo_account=False and are never
+        # touched by this. For a demo account, atomically decrements
+        # demo_calls_remaining as part of the same UPDATE that checks it's
+        # > 0 — an ordinary "read the count, check it, then write" would
+        # have a race: two calls placed within the same second could both
+        # read "1 remaining" before either writes, and both would go
+        # through. The WHERE clause below makes the decrement and the
+        # check the same atomic database operation, so only one of two
+        # simultaneous requests can ever win the last call.
+        if company.is_demo_account:
+            from sqlalchemy import update as _update
+            result = await db.execute(
+                _update(Company)
+                .where(Company.id == company_id, Company.demo_calls_remaining > 0)
+                .values(demo_calls_remaining=Company.demo_calls_remaining - 1)
+            )
+            await db.commit()
+            if result.rowcount == 0:
+                logger.warning(f"Demo call BLOCKED — no demo calls remaining | company={company_id}")
+                return {"skipped": "demo call limit reached — ask for a new demo login"}
+            logger.info(f"Demo call allowed — decremented counter | company={company_id}")
+
         from app.services.telephony.vobiz_service import vobiz_service
         call_control_id = await vobiz_service.make_outbound_call(
             to_number=lead.phone,

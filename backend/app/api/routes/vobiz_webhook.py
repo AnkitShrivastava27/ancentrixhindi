@@ -2680,6 +2680,18 @@ DIAGNOSTIC_MODE: bool = False
 RECORD_SILENCE_SECONDS: float = 0.5
 RECORD_MAX_LENGTH_SECONDS: int = 8
 
+# How many consecutive turns in a row can come back with no speech
+# detected (empty recording / empty transcript) before we give up and
+# hang up automatically. Previously there was no cap at all — if someone
+# picked up and just left the line open (or the call connected to
+# voicemail/silence), the flow would re-prompt "kya aap sun pa rahe
+# hain?" forever, sitting connected and burning minutes with no way to
+# end the call on its own.
+MAX_SILENT_TURNS: int = 2
+# call_uuid -> how many consecutive silent/no-speech turns in a row.
+# Reset to 0 the moment a real transcript comes back.
+_SILENT_TURNS: Dict[str, int] = {}
+
 import re as _re
 
 def _trim_to_sentence(text: str) -> str:
@@ -2806,8 +2818,19 @@ async def serve_tts_audio(token: str):
 # ── Sarvam TTS ────────────────────────────────────────────────────────────────
 # MODEL: bulbul:v3 (see module docstring for why this replaced bulbul:v2).
 # v3 speaker names are NOT shared with v2 — do not mix them.
-SARVAM_DEFAULT_VOICE = {"female": "sophia", "male": "shubh"}
-# other female v3 speakers worth trying: "priya", "kavya", "amelia"
+#
+# "sophia" (the old default here) does not exist in bulbul:v3 — Sarvam's
+# own 400 response confirms the actual valid speaker list, which does
+# NOT include "sophia": anushka, abhilash, manisha, vidya, arya, karun,
+# hitesh, aditya, ritu, priya, neha, rahul, pooja, rohan, simran, kavya,
+# amit, dev, ishita, shreya, ratan, varun, manan, sumit, roopa, kabir,
+# aayan, shubh, ashutosh, advait, anand, tanya, tarun, sunny, mani,
+# gokul, vijay, shruti, suhani, mohit, kavitha, rehan, soham, rupali.
+# Every static-phrase TTS warmup call was silently failing with a 400
+# because of this — "priya" is confirmed valid (it's what the live call
+# pipeline itself already uses successfully) and used as the new default.
+SARVAM_DEFAULT_VOICE = {"female": "priya", "male": "shubh"}
+# other female v3 speakers worth trying: "kavya", "manisha", "neha"
 # other male v3 speakers worth trying: "aditya", "advait", "ashutosh"
 
 async def _synthesize_sarvam(text: str, company: Company) -> Optional[bytes]:
@@ -2820,7 +2843,7 @@ async def _synthesize_sarvam(text: str, company: Company) -> Optional[bytes]:
         return None
 
     gender  = (getattr(company, "voice_gender", None) or "female").lower()
-    speaker = getattr(company, "tts_voice", None) or SARVAM_DEFAULT_VOICE.get(gender, "sophia")
+    speaker = getattr(company, "tts_voice", None) or SARVAM_DEFAULT_VOICE.get(gender, "priya")
 
     try:
         resp = await _client().post(
@@ -3101,6 +3124,10 @@ async def recording_callback(
 
     if not recording_url:
         logger.warning(f"No recording URL | call_uuid={call_uuid[:12]} — asking to repeat")
+        silent_count = _SILENT_TURNS.get(call_uuid, 0) + 1
+        _SILENT_TURNS[call_uuid] = silent_count
+        if silent_count >= MAX_SILENT_TURNS:
+            return await _silence_hangup_response(call_uuid, company_id, lead_id, mode)
         return await _error_response(call_uuid, company_id, lead_id, mode,
                                      "Maafi chahta hoon, mujhe sunai nahi diya. Kya aap dobara bol sakte hain?")
 
@@ -3147,6 +3174,10 @@ async def _process_recording_turn(
     transcript = await _transcribe_url(recording_url, vobiz_auth_id, vobiz_auth_token)
     if not transcript:
         logger.warning(f"Empty transcript | call_uuid={call_uuid[:12]} — asking to repeat")
+        silent_count = _SILENT_TURNS.get(call_uuid, 0) + 1
+        _SILENT_TURNS[call_uuid] = silent_count
+        if silent_count >= MAX_SILENT_TURNS:
+            return await _silence_hangup_response(call_uuid, company_id, lead_id, mode)
         return await _error_response(call_uuid, company_id, lead_id, mode,
                                      "Kuch sunai nahi diya. Kya aap thoda louder bol sakte hain?")
 
@@ -3255,6 +3286,10 @@ async def _build_reply_response(
 ) -> Response:
 
     logger.info(f"Transcript: '{transcript[:120]}' | call_uuid={call_uuid[:12]}")
+    # Real speech came back — clear the consecutive-silence counter so a
+    # single quiet/misheard turn earlier in the call doesn't count toward
+    # the auto-hangup threshold later on.
+    _SILENT_TURNS.pop(call_uuid, None)
 
     if call_uuid in _hung_up:
         return Response(content="<Response><Hangup/></Response>", media_type="text/xml")
@@ -3432,6 +3467,27 @@ async def _error_response(
     return Response(content=_xml_wrap_with_listen(prompt_xml, action_url), media_type="text/xml")
 
 
+async def _silence_hangup_response(
+    call_uuid: str,
+    company_id: Optional[str],
+    lead_id: Optional[str],
+    mode: Optional[str],
+) -> Response:
+    """Plays a short farewell and hangs up — used once MAX_SILENT_TURNS
+    consecutive no-speech turns have been hit, so a caller who picked up
+    and never said anything (or went silent) doesn't sit connected
+    indefinitely. See MAX_SILENT_TURNS/_SILENT_TURNS above."""
+    logger.info(f"Vobiz — silence timeout, auto-disconnecting | call_uuid={call_uuid[:12]}")
+    _SILENT_TURNS.pop(call_uuid, None)
+    _hung_up.add(call_uuid)
+    session = await session_manager.get(call_uuid)
+    company = await _company_for_session(session) if session else None
+    voice_cfg = get_vobiz_voice(company) if company else {"voice": "WOMAN", "language": "hi-IN"}
+    farewell = "Lagta hai koi jawab nahi mil raha, isliye main call disconnect kar raha hoon. Dhanyavaad!"
+    prompt_xml = await _xml_prompt(farewell, voice_cfg, company)
+    return Response(content=f"<Response>{prompt_xml}<Hangup/></Response>", media_type="text/xml")
+
+
 # ── Deepgram transcription ────────────────────────────────────────────────────
 
 async def _transcribe_url(audio_url: str, vobiz_auth_id: str, vobiz_auth_token: str) -> str:
@@ -3513,6 +3569,7 @@ async def hangup_webhook(
     _PENDING_TURNS.pop(call_uuid, None)
     _CONTINUE_BOUNCES.pop(call_uuid, None)
     _LAST_FILLER.pop(call_uuid, None)
+    _SILENT_TURNS.pop(call_uuid, None)
     logger.info(f"Vobiz hangup | call_uuid={call_uuid[:12]} | all_fields={dict(form)}")
     background_tasks.add_task(_finalize_hangup, call_uuid, company_id, lead_id)
     return {"result": "ok"}

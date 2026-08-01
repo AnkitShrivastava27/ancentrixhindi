@@ -235,3 +235,35 @@ async def enable_user(user_id: str):
         user.is_active = True
         await db.commit()
     return {"success": True, "message": f"Enabled {user.email}"}
+
+
+class SetDemoCallsRequest(BaseModel):
+    calls_remaining: int = 2
+    is_demo_account: Optional[bool] = None   # omit to leave unchanged; set True the first time you turn a company into a demo account
+
+
+@router.post("/companies/{company_id}/demo-calls", dependencies=[Depends(_require_admin)])
+async def set_demo_calls(company_id: str, data: SetDemoCallsRequest):
+    """Resets the shared demo account's call counter before handing the
+    login to a new prospect (or turns an existing company into a demo
+    account for the first time, via is_demo_account). See
+    app/tasks/tasks.py's _async_outbound_call for where this is enforced
+    — real customer accounts (is_demo_account=False) are never affected
+    by anything here regardless of what calls_remaining holds."""
+    if data.calls_remaining < 0:
+        raise HTTPException(400, "calls_remaining cannot be negative")
+    async with AsyncSessionLocal() as db:
+        company = await db.get(Company, company_id)
+        if not company:
+            raise HTTPException(404, "Company not found")
+        company.demo_calls_remaining = data.calls_remaining
+        if data.is_demo_account is not None:
+            company.is_demo_account = data.is_demo_account
+        await db.commit()
+    logger.info(f"Admin set demo calls for company_id={company_id} → {data.calls_remaining} (is_demo_account={data.is_demo_account})")
+    return {
+        "success": True,
+        "company_id": company_id,
+        "demo_calls_remaining": data.calls_remaining,
+        "is_demo_account": data.is_demo_account,
+    }

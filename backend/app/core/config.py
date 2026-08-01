@@ -70,7 +70,6 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://ancentrixhindi-livid.vercel.app"
     ]
 
     # ── Public base URL ───────────────────────────────────────────────────
@@ -82,14 +81,23 @@ class Settings(BaseSettings):
     PUBLIC_BASE_URL: Optional[str] = None
 
     # ── Vobiz (sole telephony provider) ──────────────────────────────────
-    # No global VOBIZ_AUTH_ID/VOBIZ_AUTH_TOKEN/VOBIZ_PHONE_NUMBER here on
-    # purpose — every company must set its own vobiz_auth_id/
-    # vobiz_auth_token/vobiz_phone_number via Settings. There used to be a
-    # global fallback read from .env; removed because a company with no
-    # credentials of its own would otherwise silently place/receive calls
-    # (and incur charges) on whichever account happened to be in .env —
-    # wrong for a genuinely multi-tenant deployment. See
+    # Real (non-demo) companies must still set their own vobiz_auth_id/
+    # vobiz_auth_token/vobiz_phone_number via Settings — there is NO
+    # fallback to these for a normal paying company, so one customer can
+    # never silently place/receive calls (and incur charges) on another
+    # customer's or the shared demo account. See _creds() in
     # app/services/telephony/vobiz_service.py and vobiz_stream_pipeline.py.
+    #
+    # The one deliberate exception is the shared demo account
+    # (Company.is_demo_account=True — see models.py). Prospects handed the
+    # demo login shouldn't have to go set up their own Vobiz account just
+    # to try the product, so a demo company with blank vobiz_* fields (or
+    # any of the three left blank) falls back to these .env values
+    # instead. Leave all three blank here to require the demo account to
+    # have its own credentials too.
+    VOBIZ_AUTH_ID: Optional[str] = None
+    VOBIZ_AUTH_TOKEN: Optional[str] = None
+    VOBIZ_PHONE_NUMBER: Optional[str] = None
     # True -> outbound calls use the Pipecat streaming pipeline
     # (/vobiz-stream/answer-stream). False -> rollback to the old
     # Record+Gather XML flow (/vobiz/answer). Override with
