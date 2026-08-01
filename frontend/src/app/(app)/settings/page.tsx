@@ -151,18 +151,26 @@ export default function SettingsPage() {
             </div>
             <div className={styles.productBody}>
               {grid2(
-                <Input label="Name *" value={p.name_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, name_hi:e.target.value} : x))} placeholder="Namaste Package" />,
+                // Backend requires `name` (plain string) and also matches
+                // "Active Product to Pitch" + builds the AI's outbound
+                // sales prompt off `name`/`description`, not the _hi
+                // variants (see llm_service.build_outbound_prompt). This
+                // form only shows one Hindi/Hinglish-labeled input, so we
+                // mirror every keystroke into both fields — otherwise
+                // saving 422s (name/description missing) and, even if
+                // that were relaxed, the AI would pitch a blank product.
+                <Input label="Name *" value={p.name_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, name_hi:e.target.value, name:e.target.value} : x))} placeholder="Namaste Package" />,
                 <Input label="Price" value={p.price} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, price:e.target.value} : x))} placeholder="₹999/month" />
               )}
-              <Textarea label="Description" value={p.description_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, description_hi:e.target.value} : x))} rows={2} placeholder="Hindi/Hinglish — used on Vobiz calls" />
+              <Textarea label="Description" value={p.description_hi||''} onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, description_hi:e.target.value, description:e.target.value} : x))} rows={2} placeholder="Hindi/Hinglish — used on Vobiz calls" />
               <Input label="Features (comma separated)"
                 value={Array.isArray(p.features_hi) ? p.features_hi.join(', ') : ''}
-                onChange={e => set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, features_hi:e.target.value.split(',').map((s: string) => s.trim())} : x))}
+                onChange={e => { const feats = e.target.value.split(',').map((s: string) => s.trim()); set('products', f.products.map((x: any, idx: number) => idx===i ? {...x, features_hi:feats, features:feats} : x)) }}
                 placeholder="Feature 1, Feature 2, Feature 3" />
             </div>
           </div>
         ))}
-        <button onClick={() => set('products', [...f.products, { name_hi:'', description_hi:'', price:'', features_hi:[] }])}
+        <button onClick={() => set('products', [...f.products, { name:'', name_hi:'', description:'', description_hi:'', price:'', features:[], features_hi:[] }])}
           className={styles.addProductBtn}>
           + Add Product
         </button>
