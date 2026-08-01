@@ -197,10 +197,16 @@ async def run_vobiz_stream_pipeline(
     tts, tts_sample_rate = _build_tts_service(provider, settings, gender, voice_override, language_code)
 
     system_prompt = build_hindi_prompt(company, lead, rag_context="", mode=mode)
+    # NOTE: don't seed `greeting` into messages here. The greeting is
+    # spoken via TTSSpeakFrame in _on_connected below and flows through
+    # the pipeline into context_aggregator.assistant(), which adds it to
+    # context automatically — seeding it here too made it appear TWICE in
+    # every LLM call for the whole conversation (confirmed via call logs),
+    # which wastes context and confuses the model about what it already
+    # said.
     context = LLMContext(
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "assistant", "content": greeting},
         ]
     )
     context_aggregator = LLMContextAggregatorPair(

@@ -2,6 +2,7 @@
 import { useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuthStore } from '@/store'
+import { useLiveCallStore } from '@/store/liveCallStore'
 import Sidebar from '@/components/layout/Sidebar'
 import AnimatedBackground from '@/components/shared/AnimatedBackground'
 import styles from './app-layout.module.css'
@@ -10,6 +11,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router  = useRouter()
   const pathname = usePathname()
   const { token, user, company, license, fetchCompany, fetchLicense } = useAuthStore()
+  const connectLiveCalls = useLiveCallStore(s => s.connect)
 
   useEffect(() => {
     if (!token || !user) { router.replace('/login'); return }
@@ -25,6 +27,18 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (!company) fetchCompany()
     if (!license) fetchLicense()
   }, [token, user])
+
+  // Connect the Live Call WebSocket here — at the layout level, which
+  // stays mounted for the whole app session — instead of inside
+  // live/page.tsx. That page used to own the socket itself, so navigating
+  // to Batches/Schedules/anywhere else unmounted it, closed the
+  // connection, and wiped all session/message history. Connecting here
+  // means the socket (and the conversation history in useLiveCallStore)
+  // survives regardless of which tab is currently open.
+  useEffect(() => {
+    const companyId = (company as any)?.id
+    if (companyId) connectLiveCalls(companyId)
+  }, [(company as any)?.id])
 
   // No hard redirect here on purpose. Leads/Batches/Schedules etc. stay
   // browsable even without a valid license — viewing/managing your own

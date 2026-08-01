@@ -1,43 +1,14 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../../store'
+import { useLiveCallStore, type CallStatus } from '../../../store/liveCallStore'
 import styles from './live.module.css'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-
-type MsgRole = 'user' | 'ai'
-
-interface ChatMsg {
-  role: MsgRole
-  text: string
-  ts:   string
-}
-
-type CallStatus = 'ringing' | 'in_progress' | 'ended' | 'no_answer'
-
-interface CallSession {
-  call_uuid:   string
-  phone:       string
-  mode:        string
-  lead_name?:  string
-  started_at:  string
-  answered_at?: string
-  ended_at?:   string
-  duration?:   number
-  no_answer_reason?: string
-  status:      CallStatus
-  messages:    ChatMsg[]
-}
-
-type WsEvent =
-  | { type: 'call_ringing';  call_uuid: string; phone: string; mode: string; lead_name?: string; started_at: string }
-  | { type: 'call_start';    call_uuid: string; phone: string; mode: string; started_at: string }       // back-compat alias of call_ringing
-  | { type: 'call_answered'; call_uuid: string; answered_at: string }
-  | { type: 'user_msg';      call_uuid: string; text: string; ts: string }
-  | { type: 'ai_msg';        call_uuid: string; text: string; ts: string }
-  | { type: 'call_end';      call_uuid: string; duration_sec: number; ended_at: string }
-  | { type: 'call_no_answer'; call_uuid: string; reason: string; ended_at: string }
-  | { type: 'ping' }
+// CallSession/ChatMsg/CallStatus now live in store/liveCallStore.ts — the
+// WS connection and session state moved there (connected once from
+// (app)/layout.tsx) so navigating away from this page no longer drops the
+// connection or the conversation history. This page just reads from it.
 
 const MAX_TABS = 8
 
@@ -83,103 +54,34 @@ export default function LivePage() {
   const { user, company } = useAuthStore()
   const companyId = (company as any)?.id as string | undefined
 
-  const [sessions, setSessions]       = useState<CallSession[]>([])
-  const [activeTab, setActiveTab]     = useState<string | null>(null)
-  const [wsStatus, setWsStatus]       = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
-  const wsRef    = useRef<WebSocket | null>(null)
+  // Sessions + connection now come from the persistent store (connected
+  // once at the app layout level) rather than being owned by this page —
+  // this is what makes conversation history survive tab navigation.
+  const sessions = useLiveCallStore(s => s.sessions)
+  const wsStatus = useLiveCallStore(s => s.wsStatus)
+  const connect  = useLiveCallStore(s => s.connect)
+
+  const [activeTab, setActiveTab] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement | null>(null)
+
+  // Auto-select the newest ringing/in-progress call the first time this
+  // page is visited (or if nothing is selected yet), without stomping on
+  // a selection the user already made.
+  useEffect(() => {
+    if (activeTab && sessions.some(s => s.call_uuid === activeTab)) return
+    const newest = sessions.find(s => s.status === 'ringing' || s.status === 'in_progress') || sessions[0]
+    if (newest) setActiveTab(newest.call_uuid)
+  }, [sessions, activeTab])
 
   // Auto-scroll to bottom of chat when messages change
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [sessions, activeTab])
 
-  // WebSocket connection
-  useEffect(() => {
-    if (!companyId) return
-
-    const BASE = (process.env.NEXT_PUBLIC_API_URL || '').replace('/api/v1', '')
-    const wsBase = BASE
-      .replace('https://', 'wss://')
-      .replace('http://', 'ws://')
-
-    const url = `${wsBase}/api/v1/live/ws?company_id=${companyId}`
-    const ws  = new WebSocket(url)
-    wsRef.current = ws
-
-    ws.onopen  = () => setWsStatus('connected')
-    ws.onclose = () => setWsStatus('disconnected')
-    ws.onerror = () => setWsStatus('disconnected')
-
-    ws.onmessage = (e) => {
-      const event: WsEvent = JSON.parse(e.data)
-      if (event.type === 'ping') return
-
-      setSessions(prev => {
-        let next = [...prev]
-
-        if (event.type === 'call_ringing' || event.type === 'call_start') {
-          const newSession: CallSession = {
-            call_uuid:  event.call_uuid,
-            phone:      event.phone,
-            mode:       event.mode,
-            lead_name:  (event as any).lead_name || '',
-            started_at: event.started_at,
-            status:     'ringing',
-            messages:   [],
-          }
-          // Prepend; keep MAX_TABS
-          next = [newSession, ...next].slice(0, MAX_TABS)
-          // Auto-switch to newest call
-          setActiveTab(event.call_uuid)
-          return next
-        }
-
-        const idx = next.findIndex(s => s.call_uuid === event.call_uuid)
-        if (idx === -1) return prev
-
-        if (event.type === 'call_answered') {
-          next[idx] = { ...next[idx], status: 'in_progress', answered_at: event.answered_at }
-        } else if (event.type === 'user_msg') {
-          next[idx] = {
-            ...next[idx],
-            messages: [...next[idx].messages, { role: 'user', text: event.text, ts: event.ts }]
-          }
-        } else if (event.type === 'ai_msg') {
-          next[idx] = {
-            ...next[idx],
-            messages: [...next[idx].messages, { role: 'ai', text: event.text, ts: event.ts }]
-          }
-        } else if (event.type === 'call_end') {
-          next[idx] = {
-            ...next[idx],
-            status:   'ended',
-            ended_at: event.ended_at,
-            duration: event.duration_sec,
-          }
-        } else if (event.type === 'call_no_answer') {
-          next[idx] = {
-            ...next[idx],
-            status: 'no_answer',
-            ended_at: event.ended_at,
-            no_answer_reason: event.reason,
-          }
-        }
-        return next
-      })
-    }
-
-    return () => { ws.close() }
-  }, [companyId])
-
-  // Reconnect
+  // Reconnect — the store already auto-reconnects with backoff on its
+  // own, this is just a manual nudge for the "Reconnect" button.
   function reconnect() {
-    wsRef.current?.close()
-    setWsStatus('connecting')
-    setSessions([])
-    setActiveTab(null)
-    // Remount effect by toggling companyId — simplest is to just reload
-    window.location.reload()
+    if (companyId) connect(companyId)
   }
 
   const activeSession = sessions.find(s => s.call_uuid === activeTab) ?? null
