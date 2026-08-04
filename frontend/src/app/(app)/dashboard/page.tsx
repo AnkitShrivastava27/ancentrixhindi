@@ -6,7 +6,8 @@ import { useAuthStore } from '@/store'
 import styles from './dashboard.module.css'
 
 const PIPELINE = [
-  { key: 'interested', label: 'Hot 🔥',   color: '#f25757' },
+  { key: 'hot',         label: 'Hot 🔥',   color: '#f25757' },
+  { key: 'interested',  label: 'Interested', color: '#ff9f6b' },
   { key: 'warm',       label: 'Warm',      color: '#f5a623' },
   { key: 'new',        label: 'New',       color: '#a594ff' },
   { key: 'contacted',  label: 'Contacted', color: '#4da6ff' },

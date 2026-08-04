@@ -141,11 +141,19 @@ Transcript:
 
 Company context: {company_context}
 
+lead_status guide:
+- "hot": caller showed clear buying intent — asked for pricing/next steps, agreed to a demo/site visit, said things like "I want this" / "how do I proceed" / "send me the details to book".
+- "warm": caller was engaged and asked genuine questions or showed interest, but did NOT signal they're ready to act now.
+- "interested": caller listened and responded positively but gave little detail either way.
+- "cold": caller was disengaged, gave one-word answers, or seemed uninterested throughout.
+- "closed_won"/"closed_lost"/"do_not_call": only when the call reached an explicit, unambiguous outcome.
+- "contacted": default when none of the above clearly fit (e.g. call barely started).
+
 {{
   "summary": "2-3 sentences",
   "sentiment": "positive|neutral|negative",
   "intent": "interested|not_interested|wants_callback|objection|complaint|query_resolved|other",
-  "lead_status": "new|contacted|interested|warm|cold|closed_won|closed_lost|do_not_call",
+  "lead_status": "new|contacted|interested|warm|hot|cold|closed_won|closed_lost|do_not_call",
   "interest_level": 0.0,
   "callback_requested": false,
   "callback_time_raw": null,

@@ -97,8 +97,9 @@ export function Tabs({ tabs, active, onChange }: { tabs: { id: string; label: st
 const STATUS_MAP: Record<string, { color: string; bg: string; label: string }> = {
   new: { color: '#a594ff', bg: 'rgba(165,148,255,0.1)', label: 'New' },
   contacted: { color: '#4da6ff', bg: 'rgba(77,166,255,0.1)', label: 'Contacted' },
-  interested: { color: '#f25757', bg: 'rgba(242,87,87,0.1)', label: 'Hot 🔥' },
+  interested: { color: '#ff9f6b', bg: 'rgba(255,159,107,0.1)', label: 'Interested' },
   warm: { color: '#f5a623', bg: 'rgba(245,166,35,0.1)', label: 'Warm' },
+  hot: { color: '#f25757', bg: 'rgba(242,87,87,0.1)', label: 'Hot 🔥' },
   cold: { color: '#6b6e80', bg: 'rgba(107,110,128,0.1)', label: 'Cold' },
   closed_won: { color: '#3ecf8e', bg: 'rgba(62,207,142,0.1)', label: 'Won ✓' },
   closed_lost: { color: '#4a4d5e', bg: 'rgba(74,77,94,0.15)', label: 'Lost' },

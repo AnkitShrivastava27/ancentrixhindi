@@ -3640,7 +3640,7 @@ async def _finalize_hangup(call_uuid: str, company_id: Optional[str], lead_id_pa
         if lead_id:
             lead = await _get_lead(lead_id, db)
             if lead:
-                valid = ["new","contacted","interested","warm","cold",
+                valid = ["new","contacted","interested","warm","hot","cold",
                          "closed_won","closed_lost","do_not_call"]
                 ns = analysis.get("lead_status")
                 if ns and ns in valid:

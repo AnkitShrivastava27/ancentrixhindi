@@ -220,7 +220,14 @@ async def run_vobiz_stream_pipeline(
             # sustained speech before confirming a real interruption, without
             # making genuine fast barge-ins feel sluggish. If real
             # interruptions start feeling delayed, drop this back toward 0.2.
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3)),
+            # min_volume/confidence left at Silero's defaults (0.6/0.7) were
+            # tuned for clean browser-mic input. Phone audio arrives here as
+            # compressed 8kHz mulaw over a carrier network — generally
+            # quieter and noisier — so that threshold could reject legitimate
+            # but softer-spoken caller audio as silence, which is consistent
+            # with "the bot doesn't seem to hear the caller" reports. Lowered
+            # both to be more permissive for telephony-quality audio.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(start_secs=0.3, confidence=0.5, min_volume=0.35)),
             # THE main latency fix: pipecat's default turn-stop strategy is
             # TurnAnalyzerUserTurnStopStrategy(LocalSmartTurnAnalyzerV3()),
             # and LocalSmartTurnAnalyzerV3's default SmartTurnParams.stop_secs
@@ -363,13 +370,22 @@ async def run_vobiz_stream_pipeline(
         await session_manager.add_turn(call_uuid, "assistant", greeting)
         await live_broadcaster.ai_msg(company.id, call_uuid, greeting)
 
-        # Start the silence timer fresh from right after the greeting —
-        # the caller has now heard something and it's their turn to
-        # respond, so the "did they say anything at all" clock starts
-        # here rather than at socket-connect time.
+    # Start the silence timer only once the greeting audio has actually
+    # finished PLAYING (not the moment it's queued for TTS). Starting it
+    # at queue-time meant the ~6-8s it takes to generate + play the
+    # greeting was already eating most of SILENCE_NUDGE_SECONDS, leaving
+    # the caller almost no real time to respond before the "Hello? Are
+    # you there?" nudge fired — confirmed in call logs where the nudge
+    # landed ~0.1s after the bot finished speaking. The watchdog task
+    # itself is also only created here now, once, on first bot-stopped
+    # event, guarded by _watchdog_holder so later utterances (nudges,
+    # normal replies) don't spawn duplicate watchdog loops.
+    @transport.event_handler("on_bot_stopped_speaking")
+    async def _on_bot_stopped_speaking(_transport, _client):
         _silence_state["last_activity"] = datetime.utcnow()
         _silence_state["nudged"] = False
-        _watchdog_holder["task"] = asyncio.create_task(_silence_watchdog())
+        if "task" not in _watchdog_holder:
+            _watchdog_holder["task"] = asyncio.create_task(_silence_watchdog())
 
     @transport.event_handler("on_client_disconnected")
     async def _on_disconnected(_transport, _client):
@@ -379,83 +395,22 @@ async def run_vobiz_stream_pipeline(
             watchdog_task.cancel()
         from app.api.routes.live_ws import live_broadcaster
         duration = int((datetime.utcnow() - _call_started_at).total_seconds())
+        # Immediate broadcast only, for a snappy Live Call UI update the
+        # instant the media stream drops. The actual session finalize —
+        # post-call analysis (summary/sentiment/lead-status) + DB writes
+        # — happens exactly once, in vobiz_webhook.py's /hangup route,
+        # which is the authoritative Vobiz-side call-end event (it also
+        # already owns clearing the batch dispatch lock). This handler
+        # used to ALSO call session_manager.end() + run the full
+        # analysis/DB-write here, which raced with /hangup doing the same
+        # thing on the same call_uuid — session_manager.end() deletes the
+        # Redis session on first call, so whichever of the two fired
+        # first "won" and the other silently no-op'd. If the winner threw
+        # partway through (e.g. analyze_call() erroring), the session was
+        # already gone and there was no fallback — which matches the
+        # intermittent "lead status / call status / summary just didn't
+        # update" reports. One source of truth now.
         await live_broadcaster.call_end(company.id, call_uuid, duration)
-
-        # Post-call analysis (summary/sentiment/intent/lead-status) — was
-        # ONLY ever wired into vobiz_webhook.py's old Record+Gather flow,
-        # which stopped being the active call path when this streaming
-        # pipeline became the default (USE_STREAMING_CALLS=true). It
-        # simply never ran for any real call made through this file,
-        # which is why Call.summary/Call.sentiment stayed blank and
-        # Lead.status never moved — not a bug in analyze_call() itself,
-        # it just had no caller in the code path that's actually used.
-        try:
-            from app.services.telephony.call_session import session_manager
-            from app.services.llm.llm_service import llm_service
-            from app.core.database import AsyncSessionLocal
-            from app.models.models import CallLog, Lead
-            from sqlalchemy import select
-
-            session = await session_manager.end(call_uuid)
-            if session:
-                history = session.get("history", [])
-                call_log_id = session.get("call_log_id")
-                lead_id = session.get("lead_id")
-
-                transcript = "\n".join(
-                    f"{'Agent' if m['role'] == 'assistant' else 'Caller'}: {m['content']}"
-                    for m in history
-                )
-
-                analysis = {}
-                if transcript:
-                    try:
-                        analysis = await llm_service.analyze_call(
-                            transcript, f"{company.name} — {company.description or ''}"
-                        )
-                    except Exception as e:
-                        logger.error(f"Post-call analysis error | call_uuid={call_uuid[:12]}: {e}")
-
-                async with AsyncSessionLocal() as db:
-                    if call_log_id:
-                        r = await db.execute(select(CallLog).where(CallLog.id == call_log_id))
-                        log = r.scalar_one_or_none()
-                        if log:
-                            log.status = "completed"
-                            log.ended_at = datetime.utcnow()
-                            log.duration_seconds = duration
-                            log.conversation_history = history
-                            log.transcript = transcript
-                            log.summary = analysis.get("summary", "")
-                            log.sentiment = analysis.get("sentiment", "")
-                            log.intent = analysis.get("intent", "")
-                            log.lead_status_after = analysis.get("lead_status", "")
-                            log.transferred_to_human = analysis.get("transferred_to_human", False)
-                            log.updated_at = datetime.utcnow()
-
-                    if lead_id:
-                        r = await db.execute(select(Lead).where(Lead.id == lead_id))
-                        lead = r.scalar_one_or_none()
-                        if lead:
-                            valid_statuses = ["new", "contacted", "interested", "warm", "cold",
-                                               "closed_won", "closed_lost", "do_not_call"]
-                            new_status = analysis.get("lead_status")
-                            if new_status and new_status in valid_statuses:
-                                lead.status = new_status
-                            interest = analysis.get("interest_level")
-                            if interest is not None:
-                                lead.interest_level = float(interest)
-                            key_info = analysis.get("key_info", {})
-                            if key_info:
-                                lead.key_info = {**(lead.key_info or {}),
-                                                  **{k: v for k, v in key_info.items() if v}}
-                            lead.updated_at = datetime.utcnow()
-
-                    await db.commit()
-                logger.info(f"Post-call analysis saved | call_uuid={call_uuid[:12]} | sentiment={analysis.get('sentiment')} | lead_status={analysis.get('lead_status')}")
-        except Exception as e:
-            logger.error(f"Post-call analysis/save failed | call_uuid={call_uuid[:12]}: {e}", exc_info=True)
-
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)

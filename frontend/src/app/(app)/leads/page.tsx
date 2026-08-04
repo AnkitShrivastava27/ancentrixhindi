@@ -278,7 +278,8 @@ const STATUSES = [
   { value: 'new', label: 'New' }, { value: 'contacted', label: 'Contacted' },
   { value: 'called', label: '\ud83d\udcf5 Called \u2014 No Answer' },
   { value: 'human_callback_requested', label: '\u260E Wants Human Callback' },
-  { value: 'interested', label: 'Hot / Interested' }, { value: 'warm', label: 'Warm' },
+  { value: 'interested', label: 'Interested' }, { value: 'warm', label: 'Warm' },
+  { value: 'hot', label: '\ud83d\udd25 Hot' },
   { value: 'cold', label: 'Cold' }, { value: 'closed_won', label: 'Won' },
   { value: 'closed_lost', label: 'Lost' }, { value: 'do_not_call', label: 'Do Not Call' },
 ]

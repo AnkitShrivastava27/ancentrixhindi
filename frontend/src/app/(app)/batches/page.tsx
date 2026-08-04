@@ -6,7 +6,7 @@ import { Button, Input, Select, Tabs, StatusBadge, Spinner, EmptyState, StatCard
 import toast from 'react-hot-toast'
 import styles from './batches.module.css'
 
-const LEAD_STATUSES = ['new','contacted','interested','warm','cold']
+const LEAD_STATUSES = ['new','contacted','interested','warm','hot','cold']
 const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
 
 function Bar({ done, total, color }: { done: number; total: number; color: string }) {
