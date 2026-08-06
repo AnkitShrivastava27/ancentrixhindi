@@ -197,13 +197,21 @@ async def run_vobiz_stream_pipeline(
     tts, tts_sample_rate = _build_tts_service(provider, settings, gender, voice_override, language_code)
 
     system_prompt = build_hindi_prompt(company, lead, rag_context="", mode=mode)
-    # NOTE: don't seed `greeting` into messages here. The greeting is
-    # spoken via TTSSpeakFrame in _on_connected below and flows through
-    # the pipeline into context_aggregator.assistant(), which adds it to
-    # context automatically — seeding it here too made it appear TWICE in
-    # every LLM call for the whole conversation (confirmed via call logs),
-    # which wastes context and confuses the model about what it already
-    # said.
+    # Tell the model directly, in the prompt, that it already greeted —
+    # rather than relying on the greeting showing up as an assistant turn
+    # in context. That still depended on frame/pipeline timing: if the
+    # caller says anything before the greeting audio finishes playing
+    # (confirmed happening — background noise or an early "Hello?" is
+    # common), the LLM gets invoked before context_aggregator.assistant()
+    # has captured the greeting, sees no assistant turns at all, and
+    # reintroduces itself in its own words. This is deterministic instead
+    # — always true regardless of when the model first gets invoked.
+    system_prompt += (
+        f"\n\nAap PEHLE SE HI is greeting ke saath call shuru kar chuke hain: "
+        f"\"{greeting}\"\nISKO DOBARA MAT BOLNA — na khud ko fir se introduce "
+        f"karein, na yeh greeting repeat karein. Seedha conversation continue "
+        f"karein jaise aapne abhi yeh bola hai."
+    )
     context = LLMContext(
         messages=[
             {"role": "system", "content": system_prompt},

@@ -3561,6 +3561,9 @@ async def hangup_webhook(
 ):
     form      = await request.form()
     call_uuid = form.get("CallUUID") or form.get("RequestUUID") or ""
+    hangup_cause      = form.get("HangupCause", "")
+    hangup_cause_name = form.get("HangupCauseName", "")
+    call_status_field = form.get("CallStatus", "")
     _hung_up.add(call_uuid)
     _responding.pop(call_uuid, None)
     # Clean up the per-call tracking dicts used by the filler/redirect
@@ -3571,11 +3574,17 @@ async def hangup_webhook(
     _LAST_FILLER.pop(call_uuid, None)
     _SILENT_TURNS.pop(call_uuid, None)
     logger.info(f"Vobiz hangup | call_uuid={call_uuid[:12]} | all_fields={dict(form)}")
-    background_tasks.add_task(_finalize_hangup, call_uuid, company_id, lead_id)
+    background_tasks.add_task(
+        _finalize_hangup, call_uuid, company_id, lead_id,
+        hangup_cause, hangup_cause_name, call_status_field,
+    )
     return {"result": "ok"}
 
 
-async def _finalize_hangup(call_uuid: str, company_id: Optional[str], lead_id_param: Optional[str]):
+async def _finalize_hangup(
+    call_uuid: str, company_id: Optional[str], lead_id_param: Optional[str],
+    hangup_cause: str = "", hangup_cause_name: str = "", call_status_field: str = "",
+):
     session = await session_manager.end(call_uuid)
 
     lead_id_for_lock = (session.get("lead_id") if session else None) or lead_id_param
@@ -3593,6 +3602,54 @@ async def _finalize_hangup(call_uuid: str, company_id: Optional[str], lead_id_pa
             logger.debug(f"Batch lock clear error: {e}")
 
     if not session:
+        # The call never actually connected — busy, rejected, unreachable,
+        # no answer, etc. session_manager only creates a session once the
+        # media stream connects (i.e. someone picked up), so there's
+        # nothing in Redis to finalize the usual way. Previously this just
+        # `return`ed here, silently leaving the CallLog stuck at
+        # status="ringing" forever and the lead untouched — a busy/
+        # unanswered number just vanished from tracking with no visible
+        # outcome. Vobiz's hangup payload still tells us what happened via
+        # HangupCause/HangupCauseName, so use that to close the loop.
+        cause_upper = f"{hangup_cause} {hangup_cause_name}".upper()
+        if "BUSY" in cause_upper:
+            outcome = "busy"
+        elif any(k in cause_upper for k in ("NO_ANSWER", "NO ANSWER", "TIMEOUT", "RINGING")):
+            outcome = "no_answer"
+        elif any(k in cause_upper for k in ("REJECT", "DECLINE", "CANCEL")):
+            outcome = "rejected"
+        elif call_status_field and call_status_field.lower() not in ("completed",):
+            outcome = "failed"
+        else:
+            # Answered per Vobiz but we have no session — media stream
+            # never connected (e.g. a network/websocket hiccup). Treat as
+            # no_answer rather than leaving it silently stuck.
+            outcome = "no_answer"
+
+        async with AsyncSessionLocal() as db:
+            r = await db.execute(select(CallLog).where(CallLog.call_control_id == call_uuid))
+            log = r.scalar_one_or_none()
+            if log and log.status == "ringing":
+                log.status = outcome
+                log.ended_at = datetime.utcnow()
+                await db.commit()
+
+                if log.lead_id:
+                    lead = await _get_lead(str(log.lead_id), db)
+                    if lead and lead.status in ("new", "contacted"):
+                        # "called" == the frontend's "📵 Called — No Answer"
+                        # bucket — used for busy/rejected/failed too, since
+                        # none of those mean the lead was ever actually
+                        # reached; distinguishing them further belongs in
+                        # the call log detail, not the lead pipeline stage.
+                        lead.status = "called"
+                        lead.updated_at = datetime.utcnow()
+                        await db.commit()
+            try:
+                await live_broadcaster.call_no_answer(company_id or (log.company_id if log else None), call_uuid, outcome)
+            except Exception:
+                pass
+        logger.info(f"Call never connected | call_uuid={call_uuid[:12]} | outcome={outcome} | cause={hangup_cause_name or hangup_cause}")
         return
 
     history     = session.get("history", [])

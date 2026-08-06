@@ -52,8 +52,17 @@ def build_hindi_prompt(company: Any, lead: Any, rag_context: str, mode: str) -> 
         if feats:
             products_txt += f" | Features: {', '.join(feats)}"
 
+    # Default persona: a real, experienced professional — not a generic
+    # "AI phone agent." A company can still fully redefine this via their
+    # own custom prompt below (e.g. "senior sales manager, 20 years
+    # experience"), but the out-of-the-box tone should already sound
+    # confident and competent rather than like a script-reader, since most
+    # companies won't write a custom prompt at all.
+    role_word = "sales executive" if mode == "sales" else "customer support specialist"
     base = (
-        f"Aap {agent} hain, {company.name} ke liye ek AI phone agent. "
+        f"Aap {agent} hain, {company.name} ke ek experienced aur confident "
+        f"{role_word} — aap apna kaam achhi tarah jaante hain aur naturally, "
+        f"knowledgeably baat karte hain, kisi script padhne wale AI ki tarah nahi. "
         f"HAMESHA natural Hindi-English mix (Hinglish) mein baat karein.\n"
         f"{gender_grammar_note(getattr(company, 'voice_gender', None))}\n\n"
         f"Company: {company.name}\nVivaran: {desc}\nSevayein: {serv}\n"
@@ -61,9 +70,33 @@ def build_hindi_prompt(company: Any, lead: Any, rag_context: str, mode: str) -> 
     if products_txt:
         base += f"\nProducts:{products_txt}\n"
     if faqs:
-        base += f"\nFAQs:\n{faqs}\n"
+        # Merely including the FAQ text wasn't enough on its own to
+        # guarantee the model actually reaches for it — an explicit
+        # instruction makes retrieval-from-context deliberate rather than
+        # incidental, and the "don't invent details" line stops it from
+        # fabricating an answer when a question falls outside this list.
+        base += (
+            f"\nFAQs — caller ke sawaal is list se directly match ho toh "
+            f"ISI jawab ko use karein, apni taraf se mat banayein:\n{faqs}\n"
+        )
     if rag_context:
         base += f"\nAdditional context:\n{rag_context}\n"
+
+    # Custom instructions from Settings → System Prompt. These were being
+    # saved to Company.inbound_system_prompt / outbound_sales_prompt but
+    # never actually read anywhere in this function — whatever the user
+    # typed there (specific qualifying questions, tone guidance, things to
+    # avoid saying, persona/experience-level overrides, etc.) never
+    # reached the model. Appended rather than replacing `base`, since the
+    # auto-generated company/product/FAQ context above is still needed —
+    # this is additional instruction on top of that, not a full
+    # replacement of it. Because it's appended LAST, a company's custom
+    # prompt can override the default persona/tone set above simply by
+    # stating a different one explicitly.
+    custom_prompt = (
+        getattr(company, "outbound_sales_prompt", None) if mode == "sales"
+        else getattr(company, "inbound_system_prompt", None)
+    )
 
     if mode == "sales":
         ln = getattr(lead, "name", None) or ""
@@ -76,4 +109,8 @@ def build_hindi_prompt(company: Any, lead: Any, rag_context: str, mode: str) -> 
         base += (
             f"\nInbound support call. Sawaal ka seedha jawab dein. CHHOTA rakhein."
         )
+
+    if custom_prompt and custom_prompt.strip():
+        base += f"\n\nAdditional instructions from the business:\n{custom_prompt.strip()}"
+
     return base
