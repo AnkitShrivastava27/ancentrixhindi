@@ -78,7 +78,7 @@ async def run_vobiz_stream_pipeline(
         LLMUserAggregatorParams,
     )
     from pipecat.serializers.vobiz import VobizFrameSerializer, parse_vobiz_start
-    from pipecat.services.deepgram.stt import DeepgramSTTService
+    from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
     from pipecat.transports.websocket.fastapi import (
         FastAPIWebsocketParams,
         FastAPIWebsocketTransport,
@@ -183,10 +183,28 @@ async def run_vobiz_stream_pipeline(
     )
 
     # ── STT: Deepgram streaming (Nova-2 supports Hindi via language="hi") ──
+    # Deepgram's default endpointing finalizes very eagerly on brief mid-
+    # sentence pauses — confirmed in call logs: one continuous caller
+    # utterance ("...call to location available at... apartment.") came
+    # through as TWO separate "final" transcripts, and each one
+    # independently triggered LLMUserAggregator's
+    # TranscriptionUserTurnStartStrategy → a full LLM inference cycle. The
+    # result was two uncoordinated bot responses stacked back to back with
+    # no user turn between them, each answering a different half of the
+    # same sentence — which read as the bot ignoring what was actually
+    # asked. `utterance_end_ms` tells Deepgram to hold off finalizing
+    # until a real pause (not just a breath), giving one coherent final
+    # per turn instead of fragments.
     stt = DeepgramSTTService(
         api_key=settings.DEEPGRAM_API_KEY,
         model="nova-2",
         language="hi" if mode != "english" else "en",
+        live_options=LiveOptions(
+            interim_results=True,
+            utterance_end_ms="1200",
+            vad_events=True,
+            endpointing=300,
+        ),
     )
 
     # ── LLM: reuse whichever provider is already configured for this app ──

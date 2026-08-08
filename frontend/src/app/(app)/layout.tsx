@@ -10,10 +10,19 @@ import styles from './app-layout.module.css'
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router  = useRouter()
   const pathname = usePathname()
-  const { token, user, company, license, fetchCompany, fetchLicense } = useAuthStore()
+  const { token, user, company, license, hasHydrated, fetchCompany, fetchLicense } = useAuthStore()
   const connectLiveCalls = useLiveCallStore(s => s.connect)
 
   useEffect(() => {
+    // Don't make any login/redirect decision until zustand-persist has
+    // actually finished reading localStorage. Before this flag existed,
+    // token/user were still at their default `null` on the very first
+    // render — regardless of what was actually stored — because that
+    // read is async (required for SSR safety in Next.js). This effect
+    // used to fire on that first render and redirect to /login every
+    // single time, even with a perfectly valid stored session, because
+    // it couldn't yet tell "no session" apart from "haven't checked yet".
+    if (!hasHydrated) return
     if (!token || !user) { router.replace('/login'); return }
     // `company` (and therefore company_id) is deliberately NOT persisted
     // to localStorage — only `user`/`token` are (see store/index.ts
@@ -26,7 +35,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     // same as license, so it's always populated after a fresh page load.
     if (!company) fetchCompany()
     if (!license) fetchLicense()
-  }, [token, user])
+  }, [hasHydrated, token, user])
 
   // Connect the Live Call WebSocket here — at the layout level, which
   // stays mounted for the whole app session — instead of inside
@@ -48,7 +57,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   // runs regardless of what this page shows. The banner below is just a
   // visible nudge to renew, not a wall.
 
-  if (!token || !user) return null
+  if (!hasHydrated || !token || !user) return null
 
   return (
     <div className={styles.shell}>

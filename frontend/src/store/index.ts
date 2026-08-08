@@ -38,6 +38,7 @@ interface AuthState {
   company:   Company | null
   license:   LicenseInfo | null
   isLoading: boolean
+  hasHydrated: boolean
 
   loginWithEmail:    (email: string, password: string) => Promise<void>
   registerWithLicense: (data: { email: string; password: string; full_name: string; license_key: string }) => Promise<void>
@@ -57,6 +58,7 @@ export const useAuthStore = create<AuthState>()(
       company:   null,
       license:   null,
       isLoading: false,
+      hasHydrated: false,
 
       loginWithEmail: async (email, password) => {
         set({ isLoading: true })
@@ -126,6 +128,14 @@ export const useAuthStore = create<AuthState>()(
       partialize: (state) => ({ user: state.user, token: state.token }),
       onRehydrateStorage: () => (state) => {
         if (state?.token) apiClient.setToken(state.token)
+        // Runs after zustand-persist finishes reading localStorage,
+        // whether or not there was anything to restore. AppLayout was
+        // checking `!token || !user` and redirecting to /login on the
+        // very FIRST render — before this async read completes — so it
+        // redirected on every single page refresh even with a perfectly
+        // valid stored session, since `token`/`user` are still null at
+        // that point regardless of what's actually in localStorage.
+        useAuthStore.setState({ hasHydrated: true })
       },
     }
   )
