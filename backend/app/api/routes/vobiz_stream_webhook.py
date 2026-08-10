@@ -44,6 +44,7 @@ from app.core.database import AsyncSessionLocal
 from app.models.models import CallLog, Company, Lead
 from app.services.telephony.call_session import session_manager
 from app.services.telephony.vobiz_service import _get_base_url
+from app.api.routes.live_ws import live_broadcaster
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,6 +80,12 @@ async def answer_stream(
 
         # Same idempotency pattern as the Record-mode file's /answer —
         # Vobiz can retry a webhook delivery for the same CallUUID.
+        # NOTE: call_control_id, session_manager's key, and everything
+        # /hangup does are all intentionally left exactly as they were —
+        # /hangup (vobiz_webhook.py) always resolves CallUUID this same
+        # way and looks the Redis session up by it, so changing what's
+        # used here would break call finalization (duration/summary/lead
+        # status). See `live_uuid` below for the actual Live-tab fix.
         existing = await db.execute(select(CallLog).where(CallLog.call_control_id == call_uuid))
         call_log = existing.scalar_one_or_none()
         if not call_log:
@@ -101,10 +108,54 @@ async def answer_stream(
                 if not call_log:
                     raise
 
+        # ROOT CAUSE of the Live tab never updating: for outbound calls,
+        # tasks.py creates the "ringing" CallLog and broadcasts
+        # `call_ringing` using call_control_id = the `request_uuid`
+        # vobiz_service.make_outbound_call() returns at dial time. But
+        # `call_uuid` above prefers Vobiz's `CallUUID` — a DIFFERENT id
+        # from that same request_uuid — and every event
+        # vobiz_stream_pipeline.py broadcasts from here on (call_answered,
+        # user_msg, ai_msg, call_end) was keyed on it. request_uuid !=
+        # CallUUID, so liveCallStore.ts's
+        # `findIndex(x => x.call_uuid === event.call_uuid)` never matched
+        # and every post-ringing event was silently dropped — the card
+        # sat frozen on "ringing" forever.
+        #
+        # Fix: find that pre-existing ringing row (by lead_id, same as
+        # tasks.py's own dispatch) and use ITS call_control_id
+        # (request_uuid) as a separate `live_uuid` — used ONLY for the
+        # live_broadcaster calls the pipeline makes, so the frontend's
+        # card (created with that id) actually gets updated. Everything
+        # else (call_uuid, the CallLog row above, session_manager,
+        # /hangup) is untouched.
+        live_uuid = None
+        if lead_id:
+            ringing = await db.execute(
+                select(CallLog)
+                .where(
+                    CallLog.company_id == company.id,
+                    CallLog.lead_id    == lead_id,
+                    CallLog.status     == "ringing",
+                )
+                .order_by(CallLog.started_at.desc())
+            )
+            ringing_log = ringing.scalars().first()
+            if ringing_log:
+                live_uuid = ringing_log.call_control_id
+        if not live_uuid:
+            # No pre-existing ringing card for this call (e.g. inbound, or
+            # dispatched outside tasks.py) — nothing has told the frontend
+            # about it yet, so emit the initial event ourselves, same as
+            # Record-mode does, keyed on the same id everything else here
+            # uses so it's self-consistent.
+            live_uuid = call_uuid
+            await live_broadcaster.call_start(company_id, live_uuid, to_num or (lead.phone if lead else ""), mode or "support")
+
         await session_manager.create(
             call_control_id=call_uuid, company_id=company.id,
             lead_id=lead.id if lead else None,
             direction="outbound", mode=mode or "support", call_log_id=call_log.id,
+            live_call_uuid=live_uuid,
         )
 
         agent = company.agent_name or "Alex"
@@ -133,6 +184,7 @@ async def answer_stream(
     ws_url = (
         f"{_media_stream_ws_url()}?company_id={company_id}&amp;lead_id={lead_id or ''}"
         f"&amp;mode={mode or 'support'}&amp;call_uuid={quote(call_uuid)}"
+        f"&amp;live_uuid={quote(live_uuid)}"
         f"&amp;greeting={quote(greeting)}"
     )
     # audioTrack="inbound" is REQUIRED when bidirectional="true" — confirmed
@@ -154,6 +206,7 @@ async def media_stream(
     mode:       Optional[str] = "support",
     greeting:   Optional[str] = "",
     call_uuid:  Optional[str] = "",
+    live_uuid:  Optional[str] = "",
 ):
     await websocket.accept()
     logger.info(f"Vobiz media-stream connected | call_uuid={(call_uuid or '')[:12]} | company={company_id}")
@@ -171,6 +224,7 @@ async def media_stream(
         await run_vobiz_stream_pipeline(
             websocket=websocket,
             call_uuid=call_uuid or "",
+            live_call_uuid=live_uuid or call_uuid or "",
             company=company,
             lead=lead,
             mode=mode or "support",

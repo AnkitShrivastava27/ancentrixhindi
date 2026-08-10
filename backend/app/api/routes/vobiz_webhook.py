@@ -3682,7 +3682,12 @@ async def _finalize_hangup(
         except Exception:
             pass
 
-    await live_broadcaster.call_end(company_id, call_uuid, duration)
+    # Prefer the session's stashed live_call_uuid (set by the streaming
+    # flow — see vobiz_stream_webhook.py — when the Live tab's card was
+    # created under a different id than call_uuid). Record-mode sessions
+    # never set this, so live_call_uuid is None there and this falls
+    # straight back to call_uuid, unchanged from before.
+    await live_broadcaster.call_end(company_id, session.get("live_call_uuid") or call_uuid, duration)
 
     async with AsyncSessionLocal() as db:
         await _update_log(call_log_id, {

@@ -18,7 +18,8 @@ class CallSessionManager:
     async def create(self, call_control_id: str, company_id: str,
                      lead_id: Optional[str], direction: str,
                      mode: str, call_log_id: str,
-                     company_snapshot: Optional[Dict] = None) -> Dict:
+                     company_snapshot: Optional[Dict] = None,
+                     live_call_uuid: Optional[str] = None) -> Dict:
         from app.core.redis_client import redis_client
         session = {
             "call_control_id": call_control_id,
@@ -30,6 +31,13 @@ class CallSessionManager:
             "history":         [],
             "started_at":      datetime.utcnow().isoformat(),
             "turn_count":      0,
+            # Optional — only set by the streaming (vobiz-stream) flow.
+            # The id the Live Call tab's session card actually uses, which
+            # can differ from call_control_id (Vobiz's CallUUID) when a
+            # pre-existing "ringing" card was created at dial time under a
+            # different id (request_uuid). /hangup reads this back so its
+            # own call_end broadcast lands on the right card too.
+            "live_call_uuid":  live_call_uuid,
             # Snapshot of the Company row fields the per-turn reply/TTS path
             # needs (name, agent_name, tts config, prompts, products...).
             # Read from here on every turn instead of re-querying Postgres

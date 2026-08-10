@@ -52,6 +52,7 @@ async def run_vobiz_stream_pipeline(
     lead: Any,
     mode: str,
     greeting: str,
+    live_call_uuid: Optional[str] = None,
 ) -> None:
     """
     Entry point called by the /api/v1/vobiz-stream/media-stream WebSocket
@@ -59,6 +60,15 @@ async def run_vobiz_stream_pipeline(
 
     Builds and runs one Pipecat pipeline for the lifetime of this call.
     """
+    # `live_call_uuid` is the id the Live Call tab's session card actually
+    # uses (see vobiz_stream_webhook.py) — can differ from call_uuid
+    # (Vobiz's CallUUID) when a pre-existing "ringing" card was created at
+    # dial time under a different id. Falls back to call_uuid so this
+    # function still works if a caller doesn't pass it. Used ONLY for the
+    # live_broadcaster.* calls below — call_uuid itself is untouched
+    # everywhere else (session history, logging).
+    live_call_uuid = live_call_uuid or call_uuid
+
     # Imports are local to this function so importing this module doesn't
     # hard-require pipecat/pipecat-vobiz unless this streaming path is
     # actually used (the "vobiz" native provider never touches this file).
@@ -345,9 +355,9 @@ async def run_vobiz_stream_pipeline(
                     # watchdog below so it doesn't nudge/hang up mid-turn.
                     _silence_state["last_activity"] = datetime.utcnow()
                     _silence_state["nudged"] = False
-                    await live_broadcaster.user_msg(company.id, call_uuid, text)
+                    await live_broadcaster.user_msg(company.id, live_call_uuid, text)
                 else:
-                    await live_broadcaster.ai_msg(company.id, call_uuid, text)
+                    await live_broadcaster.ai_msg(company.id, live_call_uuid, text)
             await self.push_frame(frame, direction)
 
     pipeline = Pipeline([
@@ -385,7 +395,7 @@ async def run_vobiz_stream_pipeline(
     async def _on_connected(_transport, _client):
         logger.info(f"Vobiz stream pipeline — client connected, speaking greeting | call_uuid={call_uuid[:12]}")
         from app.api.routes.live_ws import live_broadcaster
-        await live_broadcaster.call_answered(company.id, call_uuid)
+        await live_broadcaster.call_answered(company.id, live_call_uuid)
         await task.queue_frames([TTSSpeakFrame(text=greeting)])
         # Greeting is spoken directly (see comment above) rather than
         # through the LLM, so it never passes through the _LiveTap("ai")
@@ -394,7 +404,7 @@ async def run_vobiz_stream_pipeline(
         # analysis doesn't start with a gap either.
         from app.services.telephony.call_session import session_manager
         await session_manager.add_turn(call_uuid, "assistant", greeting)
-        await live_broadcaster.ai_msg(company.id, call_uuid, greeting)
+        await live_broadcaster.ai_msg(company.id, live_call_uuid, greeting)
 
     # Start the silence timer only once the greeting audio has actually
     # finished PLAYING (not the moment it's queued for TTS). Starting it
@@ -436,7 +446,7 @@ async def run_vobiz_stream_pipeline(
         # already gone and there was no fallback — which matches the
         # intermittent "lead status / call status / summary just didn't
         # update" reports. One source of truth now.
-        await live_broadcaster.call_end(company.id, call_uuid, duration)
+        await live_broadcaster.call_end(company.id, live_call_uuid, duration)
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
