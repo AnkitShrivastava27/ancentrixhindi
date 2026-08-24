@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthStore } from '../../../store'
@@ -31,6 +31,14 @@ const POLL_INTERVAL_MS = 3000
 type Step = 'form' | 'awaiting-verification' | 'confirming-link'
 
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={null}>
+      <RegisterPageInner />
+    </Suspense>
+  )
+}
+
+function RegisterPageInner() {
   const router = useRouter()
   const params = useSearchParams()
   const cameFromEmailLink = params.get('verified') === '1'
