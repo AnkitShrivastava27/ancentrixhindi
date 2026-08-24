@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     # to a field from the outside, so main.py's CORS middleware setup
     # needs zero changes.
     allowed_origins_raw: str = Field(
-        default="http://localhost:3000,http://127.0.0.1:3000",
+        default="http://localhost:3000,http://127.0.0.1:3000,https://ancentrixhindi-livid.vercel.app",
         validation_alias="ALLOWED_ORIGINS",
     )
 
