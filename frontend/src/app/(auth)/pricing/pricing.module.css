@@ -82,3 +82,71 @@
   animation: spin 0.6s linear infinite; display: inline-block;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Plan cards (Cashfree pricing) ─────────────────────────────────────── */
+.plansGrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+@media (max-width: 480px) { .plansGrid { grid-template-columns: 1fr; } }
+
+.planCard {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  cursor: pointer;
+  transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.planCard:hover { transform: translateY(-1px); border-color: var(--accent); }
+.planCardSelected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.planCardDisabled { opacity: 0.45; cursor: not-allowed; }
+.planCardDisabled:hover { transform: none; border-color: var(--border); }
+
+.planLabel { font-size: 14px; font-weight: 700; color: var(--text); display: flex; align-items: center; justify-content: space-between; }
+.planBadge {
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  padding: 2px 7px; border-radius: 20px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.planPrice { font-size: 22px; font-weight: 700; color: var(--text); }
+.planPriceUnit { font-size: 11px; font-weight: 500; color: var(--text3); }
+.planMinutes { font-size: 12px; color: var(--text2); }
+.planRate { font-size: 11px; color: var(--text3); }
+.planUsedNote { font-size: 10px; color: #f25757; margin-top: 2px; }
+
+.customAmountWrap { margin-top: 4px; }
+.customAmountInput {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  box-sizing: border-box;
+  outline: none;
+}
+.customAmountInput:focus { border-color: var(--accent); }
+
+.phoneField { margin-bottom: 16px; }
+.phoneInput {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 9px;
+  font-size: 15px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  margin-bottom: 4px;
+  box-sizing: border-box;
+  outline: none;
+}
+.phoneInput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+.summaryRow {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 10px 0; border-top: 1px solid var(--border); margin-top: 4px; margin-bottom: 16px;
+}
+.summaryLabel { font-size: 12px; color: var(--text3); }
+.summaryValue { font-size: 16px; font-weight: 700; color: var(--text); }

@@ -26,9 +26,9 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.redis_client import redis_client
-from app.core.security import hash_password
-from app.models.models import Company, License, User
-from app.services import license_service
+from app.core import firebase
+from app.models.models import Company, User
+from app.services import plan_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -58,109 +58,43 @@ async def _require_admin(request: Request, authorization: str = Header(...)):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Licenses
+# Plans — REPLACES the old Licenses section (generate/reset-domain/revoke/
+# list against the `licenses` table). That table and app/services/
+# license_service.py are left in place for historical data but are no
+# longer wired into signup or call-gating anywhere — see
+# app/services/plan_service.py instead. This is the admin-side equivalent:
+# manually credit a company with minutes (comps, support goodwill,
+# refund-as-credit) without them going through Cashfree checkout.
 # ─────────────────────────────────────────────────────────────────────────────
-class GenerateRequest(BaseModel):
-    client_name: str
-    tier: str = "pro"
-    years: int = 1
-    notes: Optional[str] = None
-
-    @field_validator("tier")
-    @classmethod
-    def _validate_tier(cls, v):
-        if v not in license_service.TIER_LIMITS:
-            raise ValueError(f"tier must be one of {list(license_service.TIER_LIMITS.keys())}")
-        return v
+class GrantPlanRequest(BaseModel):
+    plan_type: str                        # trial | basic | standard | custom
+    custom_amount: Optional[float] = None  # required if plan_type == "custom"
+    note: Optional[str] = None
 
 
-class RevokeRequest(BaseModel):
-    license_key: str
-    reason: Optional[str] = None
-
-
-@router.post("/generate", dependencies=[Depends(_require_admin)])
-async def generate_license(data: GenerateRequest):
-    key = license_service.generate_key()
-    expires_at = datetime.utcnow() + timedelta(days=365 * data.years)
-
+@router.post("/companies/{company_id}/grant-plan", dependencies=[Depends(_require_admin)])
+async def grant_plan(company_id: str, data: GrantPlanRequest):
+    """Admin-side equivalent of a successful Cashfree payment — credits
+    minutes onto a company directly, bypassing checkout entirely. Does
+    NOT create a PaymentOrder row (there's no real payment), so it won't
+    show up in Cashfree reconciliation — only in this company's plan
+    fields and your own admin audit trail (server logs)."""
     async with AsyncSessionLocal() as db:
-        db.add(License(
-            key=key,
-            client_name=data.client_name,
-            tier=data.tier,
-            status="inactive",
-            notes=data.notes,
-            expires_at=expires_at,
-        ))
+        company = await db.get(Company, company_id)
+        if not company:
+            raise HTTPException(404, "Company not found")
+
+        try:
+            priced = plan_service.price_plan(data.plan_type, data.custom_amount)
+            plan_service.assert_purchasable(company, priced["plan_type"])
+        except plan_service.PlanError as e:
+            raise HTTPException(400, str(e))
+
+        plan_service.apply_paid_plan(company, priced)
         await db.commit()
 
-    return {
-        "license_key": key,
-        "client_name": data.client_name,
-        "tier": data.tier,
-        "expires_at": expires_at.isoformat(),
-        "message": f"Share this key with {data.client_name} — they enter it on the signup page.",
-    }
-
-
-class ResetDomainRequest(BaseModel):
-    license_key: str
-
-
-@router.post("/reset-domain", dependencies=[Depends(_require_admin)])
-async def reset_domain(data: ResetDomainRequest):
-    """Un-binds a license from its currently-activated domain/account and
-    sets it back to inactive, so it can be used to register a fresh
-    account (e.g. the original signup failed halfway, or you're
-    reassigning a key to a different customer)."""
-    async with AsyncSessionLocal() as db:
-        lic = await db.get(License, data.license_key.strip().upper())
-        if not lic:
-            raise HTTPException(404, "License key not found")
-        lic.domain = None
-        lic.status = "inactive"
-        lic.activated_at = None
-        await db.commit()
-    return {"success": True, "message": f"Domain reset for {data.license_key} — ready to re-activate"}
-
-
-@router.post("/revoke", dependencies=[Depends(_require_admin)])
-async def revoke_license(data: RevokeRequest):
-    async with AsyncSessionLocal() as db:
-        lic = await db.get(License, data.license_key.strip().upper())
-        if not lic:
-            raise HTTPException(404, "License key not found")
-        lic.status = "revoked"
-        lic.revoked_at = datetime.utcnow()
-        lic.revoke_reason = data.reason
-        await db.commit()
-    return {"success": True, "message": f"License revoked: {data.license_key}"}
-
-
-@router.get("/licenses", dependencies=[Depends(_require_admin)])
-async def list_licenses():
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(License).order_by(License.created_at.desc()))
-        licenses = result.scalars().all()
-
-    now = datetime.utcnow()
-    out = []
-    for lic in licenses:
-        days_left = (lic.expires_at - now).days if lic.expires_at else None
-        out.append({
-            "license_key": lic.key,
-            "client_name": lic.client_name,
-            "tier": lic.tier,
-            "status": lic.status,
-            "domain": lic.domain,
-            "expires_at": lic.expires_at.isoformat() if lic.expires_at else None,
-            "days_left": days_left,
-            "activated_at": lic.activated_at.isoformat() if lic.activated_at else None,
-            "last_validated_at": lic.last_validated_at.isoformat() if lic.last_validated_at else None,
-            "notes": lic.notes,
-        })
-    return {"total": len(out), "licenses": out}
+        logger.info(f"Admin granted plan | company={company_id} | plan={priced['plan_type']} | minutes={priced['minutes']} | note={data.note!r}")
+        return {"success": True, **plan_service.balance_summary(company)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,9 +131,9 @@ async def list_users():
                 "created_at": u.created_at.isoformat() if u.created_at else None,
                 "company_id": company.id if company else None,
                 "company_name": company.name if company else None,
-                "license_key": company.license_key if company else None,
-                "license_tier": company.license_tier if company else None,
-                "license_status": company.license_status if company else None,
+                "plan_type": company.plan_type if company else None,
+                "minutes_remaining": plan_service.minutes_remaining(company) if company else None,
+                "plan_expires_at": company.plan_expires_at.isoformat() if company and company.plan_expires_at else None,
                 "is_demo_account": bool(company.is_demo_account) if company else False,
                 "demo_calls_remaining": company.demo_calls_remaining if company else None,
             })
@@ -208,12 +142,21 @@ async def list_users():
 
 @router.post("/users/{user_id}/reset-password", dependencies=[Depends(_require_admin)])
 async def reset_user_password(user_id: str, data: ResetPasswordRequest):
+    """Sets the password directly in Firebase — there's no local password
+    to reset anymore (see app/core/security.py). Requires the user to
+    have a firebase_uid, i.e. they've actually signed in at least once
+    since the Firebase Auth switch."""
     async with AsyncSessionLocal() as db:
         user = await db.get(User, user_id)
         if not user:
             raise HTTPException(404, "User not found")
-        user.hashed_password = hash_password(data.new_password)
-        await db.commit()
+        if not user.firebase_uid:
+            raise HTTPException(400, "This user hasn't signed in via Firebase yet — nothing to reset.")
+        try:
+            firebase.update_user_password(user.firebase_uid, data.new_password)
+        except Exception as e:
+            logger.error(f"Firebase password reset failed for user_id={user_id}: {e}")
+            raise HTTPException(502, "Could not reset password in Firebase — check FIREBASE_* env vars and try again.")
     logger.info(f"Admin reset password for user_id={user_id}")
     return {"success": True, "message": f"Password reset for {user.email}. Share the new password with them directly."}
 
@@ -226,6 +169,17 @@ async def disable_user(user_id: str):
             raise HTTPException(404, "User not found")
         user.is_active = False
         await db.commit()
+        # Belt-and-suspenders: our own get_current_active_user already
+        # blocks a disabled user immediately regardless of Firebase's own
+        # state (it checks User.is_active on every request), but revoking
+        # here too means their EXISTING token can't be used to hit
+        # Firebase-backed things outside this backend either, and closes
+        # the gap if is_active is ever bypassed by a future code change.
+        if user.firebase_uid:
+            try:
+                firebase.revoke_refresh_tokens(user.firebase_uid)
+            except Exception as e:
+                logger.warning(f"Could not revoke Firebase tokens for user_id={user_id}: {e}")
     return {"success": True, "message": f"Disabled {user.email}"}
 
 

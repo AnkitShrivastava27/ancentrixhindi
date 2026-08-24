@@ -160,6 +160,11 @@ class ProductItem(BaseModel):
     name_hi: Optional[str] = None        # Vobiz/Hindi-Hinglish override — falls back to `name` if blank
     description_hi: Optional[str] = None
     features_hi: Optional[List[str]] = None
+    category: Optional[str] = None
+    location: Optional[str] = None
+    availability: Optional[str] = None
+    target_audience: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 
 class CompanyCreate(BaseModel):
@@ -173,6 +178,7 @@ class CompanyCreate(BaseModel):
     services_hi: Optional[str] = None
     faqs: Optional[str] = None
     faqs_hi: Optional[str] = None
+    business_knowledge: Optional[dict] = None
     products: Optional[List[ProductItem]] = None
     active_product: Optional[str] = None
     agent_name: str = "Aria"
@@ -230,6 +236,7 @@ def _dict(c: Company) -> dict:
         "services_hi": c.services_hi,
         "faqs": c.faqs,
         "faqs_hi": c.faqs_hi,
+        "business_knowledge": c.business_knowledge or {},
         "products": c.products,
         "active_product": c.active_product,
         "agent_name": c.agent_name,
@@ -258,10 +265,11 @@ def _dict(c: Company) -> dict:
             f"••••{c.vobiz_auth_token[-4:]}" if c.vobiz_auth_token and len(c.vobiz_auth_token) >= 4 else None
         ),
         "vobiz_phone_number": c.vobiz_phone_number,
-        "license_key": c.license_key,
-        "license_tier": c.license_tier,
-        "license_status": c.license_status,
-        "license_expires_at": c.license_expires_at,
+        "plan_type": c.plan_type,
+        "plan_minutes_total": c.plan_minutes_total,
+        "plan_minutes_used": c.plan_minutes_used,
+        "plan_expires_at": c.plan_expires_at,
+        "trial_used": c.trial_used,
         "email_from_address": c.email_from_address,
         "email_from_name": c.email_from_name,
         "email_reply_to": c.email_reply_to,

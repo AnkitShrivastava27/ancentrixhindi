@@ -41,8 +41,12 @@ logger = logging.getLogger(__name__)
 # wait after the last thing we heard (or the greeting finishing) before
 # playing one "are you there?" prompt; SILENCE_HANGUP_SECONDS is how much
 # additional silence after that nudge before the call is auto-disconnected.
-SILENCE_NUDGE_SECONDS: float = 10.0
-SILENCE_HANGUP_SECONDS: float = 10.0  # measured from the nudge, not from the original silence start
+SILENCE_NUDGE_SECONDS: float = 15.0
+# Additional silence after the nudge before the provider call is actually hung up.
+# Total idle protection is therefore ~60 seconds (15s + 45s), excluding the
+# greeting itself.  This is deliberately separate from Smart Turn/VAD, which
+# only decides when an individual speech turn has ended.
+SILENCE_HANGUP_SECONDS: float = 45.0
 
 
 async def run_vobiz_stream_pipeline(
@@ -53,6 +57,7 @@ async def run_vobiz_stream_pipeline(
     mode: str,
     greeting: str,
     live_call_uuid: Optional[str] = None,
+    product_focus: Optional[str] = None,
 ) -> None:
     """
     Entry point called by the /api/v1/vobiz-stream/media-stream WebSocket
@@ -76,7 +81,10 @@ async def run_vobiz_stream_pipeline(
     from pipecat.audio.vad.vad_analyzer import VADParams
     from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-    from pipecat.frames.frames import TTSSpeakFrame, TranscriptionFrame, TextFrame, EndFrame
+    from pipecat.frames.frames import (
+        TTSSpeakFrame, TranscriptionFrame, TextFrame, EndFrame,
+        LLMFullResponseStartFrame, LLMFullResponseEndFrame, LLMContextFrame,
+    )
     import asyncio
     from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
     from pipecat.pipeline.pipeline import Pipeline
@@ -97,7 +105,7 @@ async def run_vobiz_stream_pipeline(
     from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
     from app.core.config import settings
-    from app.services.llm.prompts import build_hindi_prompt
+    from app.services.llm.prompts import build_hindi_prompt, relevant_knowledge
 
     def _resolve_tts_provider(requested: str, language: str) -> tuple[str, Optional[str]]:
         """
@@ -114,6 +122,30 @@ async def run_vobiz_stream_pipeline(
         DEEPGRAM_AURA_SUPPORTED_LANGS = {"en", "es", "de", "fr", "nl", "it", "ja"}
         provider = (requested or "vobiz").lower()
         lang_short = (language or "hi").lower().split("-")[0]
+
+        # BUG FIX (Aug 2026): "vobiz" was being passed straight through
+        # unchanged, which then crashed _build_tts_service() below with
+        # "'vobiz' has no Pipecat streaming path" — Vobiz's native TTS is
+        # the OLD XML <Speak> per-turn flow (app/services/tts/providers.py),
+        # which has no equivalent in this Pipecat streaming pipeline at
+        # all. "vobiz" is BOTH Company.tts_provider's AND
+        # settings.TTS_PROVIDER's default value, and USE_STREAMING_CALLS
+        # defaults to True — so this crashed on every single streaming
+        # call for any company that hadn't explicitly picked
+        # sarvam/deepgram in Settings, which is every fresh account,
+        # confirmed by the exact traceback this fix responds to. Treat
+        # "vobiz" here as "no real streaming provider was actually
+        # chosen" and pick the right default for the call's language:
+        # Sarvam for Hindi/Hinglish (purpose-built for it — see every
+        # other Sarvam comment in this file), Deepgram Aura-2 for English.
+        if provider == "vobiz":
+            fallback = "sarvam" if lang_short not in DEEPGRAM_AURA_SUPPORTED_LANGS else "deepgram"
+            return fallback, (
+                f"tts_provider='vobiz' has no Pipecat streaming path — using "
+                f"'{fallback}' for this call instead. Set a real streaming "
+                f"provider (sarvam/deepgram) in Settings to silence this warning."
+            )
+
         if provider == "deepgram" and lang_short not in DEEPGRAM_AURA_SUPPORTED_LANGS:
             warning = (
                 f"Deepgram Aura-2 does not support language='{language}' — "
@@ -205,26 +237,120 @@ async def run_vobiz_stream_pipeline(
     # asked. `utterance_end_ms` tells Deepgram to hold off finalizing
     # until a real pause (not just a breath), giving one coherent final
     # per turn instead of fragments.
+    # BUG FIX (Aug 2026) — "AI doesn't understand/remember what caller
+    # asked, Deepgram not listening correctly", Hindi calls only:
+    #
+    # This was pinned to model="nova-2", language="hi" — a MONOLINGUAL
+    # Hindi model. Real Hindi sales/support calls are Hinglish: callers
+    # constantly drop in English words (product names, numbers, "yes",
+    # "okay", brand/company names). A monolingual Hindi model has no
+    # option but to force those English words into Hindi phonetics,
+    # which mangles or drops them outright — the LLM then genuinely IS
+    # answering the wrong question, not "forgetting" anything; the
+    # transcript it received was already wrong. This looks identical to
+    # a memory bug from the caller's side but the context aggregator
+    # (see LLMContext below) is retaining turns correctly.
+    #
+    # Fix: nova-3 with language="multi" is Deepgram's dedicated
+    # Hindi<->English code-switching mode (one of the 10 languages it
+    # explicitly supports for real-time code-switching — see
+    # developers.deepgram.com/docs/multilingual-code-switching). It
+    # transcribes whichever language each word/phrase is actually said
+    # in instead of forcing everything into one script.
+    #
+    # keywords= biases the model toward the caller's own agent name /
+    # company name / product names — exactly the tokens most likely to
+    # be OOV proper nouns a generic model mishears.
+    #
+    # BUG FIX (Aug 2026): this was being passed unconditionally, on
+    # every call regardless of which Deepgram model got selected below.
+    # keywords does NOT work with nova-3 at all — confirmed against
+    # Deepgram's own docs and SDK maintainers (deepgram/deepgram-python-
+    # sdk#515; livekit's deepgram plugin docs state it explicitly:
+    # "keywords does not work with Nova-3 models. Use keyterm instead.").
+    # Deepgram rejects the WebSocket handshake outright (400,
+    # "Unexpected error when initializing websocket connection") the
+    # moment both are present together. Since nova-3 is exactly what
+    # every Hindi/Hinglish call uses (see model= below) — this product's
+    # primary use case — STT was failing to connect AT ALL on every
+    # non-English call, not just degrading in quality. Restricting
+    # keywords to the nova-2/English path only (where it IS supported —
+    # confirmed against the actual pinned deepgram-sdk LiveOptions
+    # dataclass) restores basic Hindi call functionality. nova-3 has its
+    # own equivalent (`keyterm`) but that field's exact availability
+    # wasn't re-verified against this environment's actual deepgram-sdk
+    # version (7.7.0, confirmed from this bug's own traceback) before
+    # this fix — leaving nova-3 calls without keyword boosting for now
+    # rather than guess wrong a second time on a call-breaking parameter.
+    #
+    # endpointing / utterance_end_ms deliberately left as-is — those
+    # values were already tuned against real call logs (see comment
+    # above) to fix a *different*, confirmed issue (one utterance being
+    # split into two finals). Re-tune only if nova-3/multi changes that
+    # behavior in testing; don't change blind.
+    _keyterms = [t for t in {
+        (company.agent_name or "").strip(),
+        (company.name or "").strip(),
+        *[
+            (p.get("name_hi") or p.get("name") or "").strip()
+            for p in (company.products or [])
+        ],
+    } if t]
+    _model = "nova-3" if mode != "english" else "nova-2"
+
+    # BUG FIX (Aug 2026) — "STT not listening to / not recognizing Hindi":
+    # `model=` and `language=` were being passed as TOP-LEVEL kwargs to
+    # DeepgramSTTService(...). Checked against the actual installed
+    # pipecat-ai (1.7.0) source: DeepgramSTTService.__init__ has NO
+    # `model` or `language` parameter anymore (moved to `live_options`/
+    # `settings` — this constructor signature changed upstream at some
+    # point after this file was first written). Passing them as bare
+    # kwargs meant they silently fell into **kwargs and were forwarded to
+    # the parent FrameProcessor's __init__, which does nothing with them —
+    # they never reached Deepgram's actual connection settings at all.
+    # The service was silently falling back to its hardcoded default
+    # (model="nova-3-general", language=Language.EN — ENGLISH ONLY) on
+    # every single call, regardless of `_model`/mode computed above. That
+    # is the actual reason Hindi/Hinglish speech wasn't being recognized:
+    # Deepgram was never told to listen for anything but English, and a
+    # transcript produced under the wrong language is also why the LLM
+    # looked like it was "not responding correctly" — it was correctly
+    # answering a garbled/empty English mis-transcription of what was
+    # actually said in Hindi.
+    #
+    # Fix: model/language now live INSIDE LiveOptions(...), which is the
+    # path DeepgramSTTService actually reads from (confirmed against
+    # source: LiveOptions.to_dict() is merged into Settings when
+    # `live_options=` is supplied). Functionally identical to before,
+    # just passed where the library actually looks for it.
     stt = DeepgramSTTService(
         api_key=settings.DEEPGRAM_API_KEY,
-        model="nova-2",
-        language="hi" if mode != "english" else "en",
         live_options=LiveOptions(
+            model=_model,
+            language="multi" if mode != "english" else "en",
             interim_results=True,
             utterance_end_ms="1200",
             vad_events=True,
             endpointing=300,
+            **({"keywords": _keyterms} if _model == "nova-2" and _keyterms else {}),
         ),
     )
 
-    # ── LLM: reuse whichever provider is already configured for this app ──
-    llm = _build_llm_service(settings)
-    _warm_up_llm_provider(settings)  # fire-and-forget — see docstring below
+    # ── LLM: use a dedicated low-latency voice model ───────────────────────
+    # Live calls should not share the larger post-call analysis model. GPT-OSS
+    # 20B is substantially faster on Groq and is enough for short conversational
+    # turns. We also disable the OpenAI SDK's automatic retries: a 429 retry can
+    # otherwise leave a caller waiting 10-30 seconds.
+    llm = _build_llm_service(settings, voice=True, mode=mode)
 
     # ── TTS: Sarvam or Deepgram Aura, per resolve_tts_provider() above ─────
     tts, tts_sample_rate = _build_tts_service(provider, settings, gender, voice_override, language_code)
 
-    system_prompt = build_hindi_prompt(company, lead, rag_context="", mode=mode)
+    # Batch product_focus is authoritative. Only fall back to active_product
+    # when the call was not created from a product-specific batch.
+    if not product_focus:
+        product_focus = getattr(company, "active_product", None)
+    system_prompt = build_hindi_prompt(company, lead, rag_context="", mode=mode, product_focus=product_focus)
     # Tell the model directly, in the prompt, that it already greeted —
     # rather than relying on the greeting showing up as an assistant turn
     # in context. That still depended on frame/pipeline timing: if the
@@ -234,12 +360,7 @@ async def run_vobiz_stream_pipeline(
     # has captured the greeting, sees no assistant turns at all, and
     # reintroduces itself in its own words. This is deterministic instead
     # — always true regardless of when the model first gets invoked.
-    system_prompt += (
-        f"\n\nAap PEHLE SE HI is greeting ke saath call shuru kar chuke hain: "
-        f"\"{greeting}\"\nISKO DOBARA MAT BOLNA — na khud ko fir se introduce "
-        f"karein, na yeh greeting repeat karein. Seedha conversation continue "
-        f"karein jaise aapne abhi yeh bola hai."
-    )
+    system_prompt += "\nGREETING_ALREADY_SPOKEN: yes. Do not introduce yourself or repeat the opening greeting."
     context = LLMContext(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -311,17 +432,144 @@ async def run_vobiz_stream_pipeline(
                     logger.info(f"Silence nudge | call_uuid={call_uuid[:12]}")
                     await task.queue_frames([TTSSpeakFrame(text=nudge_text)])
                 elif _silence_state["nudged"] and idle >= SILENCE_HANGUP_SECONDS:
-                    logger.info(f"Silence timeout — auto-disconnecting call | call_uuid={call_uuid[:12]}")
-                    farewell = (
-                        "I'm not getting a response, so I'll disconnect now. Thank you!" if mode == "english"
-                        else "Lagta hai koi jawab nahi mil raha, isliye main call disconnect kar raha hoon. Dhanyavaad!"
-                    )
-                    await task.queue_frames([TTSSpeakFrame(text=farewell)])
-                    await asyncio.sleep(2.5)  # let the farewell audio actually play before hanging up
-                    await task.queue_frames([EndFrame()])
+                    if not _call_state["ending"]:
+                        _call_state["ending"] = True
+                        logger.info(
+                            f"Silence timeout — auto-disconnecting call | "
+                            f"call_uuid={call_uuid[:12]} | idle_after_nudge={idle:.1f}s"
+                        )
+                        farewell = (
+                            "I'm not getting a response, so I'll disconnect now. Thank you!"
+                            if mode == "english"
+                            else "Lagta hai koi jawab nahi mil raha, isliye main call disconnect kar raha hoon. Dhanyavaad!"
+                        )
+                        await _finish_call_after_farewell(farewell, "caller_idle_timeout")
                     return
         except asyncio.CancelledError:
             pass
+
+    # Explicit caller-requested end-call phrases are handled locally so the
+    # call does not depend on a second LLM classifier or a fragile action
+    # processor. This saves TPM and makes "call cut kar do" deterministic.
+    _END_PHRASES = (
+        # English / Hinglish. Keep these short enough to catch natural STT
+        # variants such as "phone rakho aap" / "phone rakh do" without
+        # requiring the LLM to classify the intent.
+        "call cut", "call kat", "call band", "call bandh", "phone cut",
+        "phone rakh", "disconnect", "end the call", "end call", "hang up",
+        "goodbye", "good bye", "bye", "that's all", "that is all",
+        "bas itna hi", "bas ho gaya", "theek hai bye", "thik hai bye",
+        "nahi chahiye bye", "not interested", "stop calling", "call mat karna",
+        "aur kuch nahi", "bas karo", "bas kar do", "phone kaat", "call kaat",
+        "rakh do", "theek hai rakh do", "thik hai rakh do",
+        # Devanagari — Deepgram can return Hindi script for the same intent.
+        "फोन रख", "फोन रखना", "फोन रखो", "फोन रख दो", "अभी फोन रखो",
+        "ठीक है फोन रखो", "ठीक है फोन रख दो", "अच्छा फोन रखो", "बस फोन रखो",
+        "कॉल काट", "कॉल बंद", "कॉल बंद करो", "कॉल बंद कर दो", "कॉल रखो",
+        "कॉल रख दो", "अलविदा", "बाय", "गुडबाय", "बस इतना ही", "बस हो गया",
+        "मुझे फोन रखना है", "फोन रखना है", "अब फोन रखो", "अब फोन रख दो",
+    )
+    _end_task_holder = {"task": None}
+    _call_state = {
+        "ending": False,
+        "provider_hangup_requested": False,
+    }
+
+    def _normalize_end_text(text: str) -> str:
+        # STT frequently adds punctuation/extra whitespace. Unicode casefold
+        # also handles the Devanagari variants without changing their script.
+        text = (text or "").replace("’", "'").replace("‘", "'")
+        return " ".join(text.casefold().split())
+
+    def _is_explicit_end(text: str) -> bool:
+        low = _normalize_end_text(text)
+        if not low:
+            return False
+        return any(p in low for p in _END_PHRASES)
+
+    async def _request_provider_hangup(reason: str) -> bool:
+        """Request the carrier hangup exactly once.
+
+        EndFrame only stops the Pipecat pipeline/websocket; it is NOT the
+        telephony hangup. Always call the Vobiz API first so the provider sends
+        its authoritative /hangup webhook, which owns DB/lead finalization.
+        """
+        if _call_state["provider_hangup_requested"]:
+            return True
+        _call_state["provider_hangup_requested"] = True
+        try:
+            from app.services.telephony.vobiz_service import vobiz_service
+            ok = await vobiz_service.hangup(call_uuid, company)
+            logger.info(
+                f"Provider hangup requested | reason={reason} | "
+                f"call_uuid={call_uuid[:12]} | provider_ok={ok}"
+            )
+            return bool(ok)
+        except Exception as exc:
+            # Do not swallow the exception silently: if the carrier request
+            # fails, the websocket can remain alive and the caller can be
+            # charged. The next cleanup path/webhook can still finish DB work.
+            logger.exception(
+                f"Provider hangup request failed | reason={reason} | "
+                f"call_uuid={call_uuid[:12]} | error={exc}"
+            )
+            _call_state["provider_hangup_requested"] = False
+            return False
+
+    async def _finish_call_after_farewell(
+        farewell: str = "Theek hai ji, thank you. Aapka din achha rahe.",
+        reason: str = "caller_requested_end",
+    ):
+        try:
+            await task.queue_frames([TTSSpeakFrame(text=farewell)])
+            # Give Sarvam enough time to emit/play the short farewell. The
+            # provider hangup itself is still explicit and happens immediately
+            # after this bounded grace period; it no longer depends on a
+            # websocket EndFrame alone.
+            await asyncio.sleep(2.0)
+            await _request_provider_hangup(reason)
+            await task.queue_frames([EndFrame()])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                f"End-call farewell cleanup failed | reason={reason} | "
+                f"call_uuid={call_uuid[:12]} | error={exc}"
+            )
+            # If queueing TTS failed, still make the provider hangup request.
+            await _request_provider_hangup(reason + ":fallback")
+
+    class _EndCallGuard(FrameProcessor):
+        """Intercept caller hang-up requests before they reach the LLM.
+
+        Once an end request is detected, all later caller text frames are
+        dropped so a trailing 'hello'/'okay' cannot start another LLM turn
+        while the farewell is being spoken and the provider hangup is pending.
+        """
+        async def process_frame(self, frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+            if _call_state["ending"]:
+                if isinstance(frame, (TranscriptionFrame, TextFrame)):
+                    return
+                await self.push_frame(frame, direction)
+                return
+
+            if isinstance(frame, (TranscriptionFrame, TextFrame)):
+                text = getattr(frame, "text", None)
+                if text and _is_explicit_end(text):
+                    _call_state["ending"] = True
+                    from app.services.telephony.call_session import session_manager
+                    from app.api.routes.live_ws import live_broadcaster
+                    await session_manager.add_turn(call_uuid, "user", text)
+                    await live_broadcaster.user_msg(company.id, live_call_uuid, text)
+                    logger.info(
+                        f"Explicit caller end intercepted before LLM | "
+                        f"call_uuid={call_uuid[:12]} | text={text[:100]}"
+                    )
+                    if _end_task_holder["task"] is None or _end_task_holder["task"].done():
+                        _end_task_holder["task"] = asyncio.create_task(_finish_call_after_farewell())
+                    return
+            await self.push_frame(frame, direction)
 
     class _LiveTap(FrameProcessor):
         """Passes every frame through completely unchanged — this must
@@ -337,34 +585,149 @@ async def run_vobiz_stream_pipeline(
              were always blank: analyze_call() either never ran (see
              below) or would have gotten an empty transcript even if it
              had.
+
+        BUG FIX (Aug 2026) — "Live Call tab shows a new bubble for every
+        word instead of one bubble per reply":
+        This tap sits BEFORE `tts` in the pipeline (see Pipeline([...])
+        below), so on the assistant side it sees the LLM's raw streamed
+        output — pipecat's LLM services push out many small `TextFrame`/
+        `LLMTextFrame` chunks (often single words or a few tokens each)
+        as they're generated, specifically so the downstream TTS can
+        start speaking before the full sentence is ready. Firing
+        live_broadcaster.ai_msg() on every one of those chunks — as this
+        used to do — meant every word landed as its own chat bubble on
+        the frontend instead of one bubble per complete reply.
+        The caller side never showed this bug: DeepgramSTTService only
+        emits a `TranscriptionFrame` once per FINAL result (interim
+        results come through as a different frame type this tap never
+        matched), so user turns were already whole utterances.
+        Fix: buffer assistant text between `LLMFullResponseStartFrame`
+        and `LLMFullResponseEndFrame` — the two control frames pipecat
+        sends around every complete LLM turn — and only mirror/record it
+        once, as one full sentence, when the response is actually done.
         """
         def __init__(self, kind: str):
             super().__init__()
             self._kind = kind
+            self._buffer: list = []  # assistant-side only — accumulates streamed chunks for one turn
 
         async def process_frame(self, frame, direction: FrameDirection):
             await super().process_frame(frame, direction)
-            text = getattr(frame, "text", None)
-            if text and isinstance(frame, (TranscriptionFrame, TextFrame)):
-                from app.api.routes.live_ws import live_broadcaster
-                from app.services.telephony.call_session import session_manager
-                role = "user" if self._kind == "user" else "assistant"
-                await session_manager.add_turn(call_uuid, role, text)
-                if self._kind == "user":
+
+            if self._kind == "ai":
+                if isinstance(frame, LLMFullResponseStartFrame):
+                    self._buffer = []
+                elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame):
+                    chunk = getattr(frame, "text", None)
+                    if chunk:
+                        self._buffer.append(chunk)
+                elif isinstance(frame, LLMFullResponseEndFrame):
+                    full_text = "".join(self._buffer).strip()
+                    self._buffer = []
+                    if full_text:
+                        from app.api.routes.live_ws import live_broadcaster
+                        from app.services.telephony.call_session import session_manager
+                        await session_manager.add_turn(call_uuid, "assistant", full_text)
+                        await live_broadcaster.ai_msg(company.id, live_call_uuid, full_text)
+            else:
+                text = getattr(frame, "text", None)
+                if text and isinstance(frame, (TranscriptionFrame, TextFrame)):
+                    # Defensive second interception. _EndCallGuard normally
+                    # catches this first, but keeping the detector here makes
+                    # the behavior resilient to Pipecat/STT frame variations.
+                    if not _call_state["ending"] and _is_explicit_end(text):
+                        _call_state["ending"] = True
+                        from app.services.telephony.call_session import session_manager
+                        from app.api.routes.live_ws import live_broadcaster
+                        await session_manager.add_turn(call_uuid, "user", text)
+                        await live_broadcaster.user_msg(company.id, live_call_uuid, text)
+                        logger.info(
+                            f"Explicit caller end intercepted in LiveTap fallback | "
+                            f"call_uuid={call_uuid[:12]} | text={text[:100]}"
+                        )
+                        if _end_task_holder["task"] is None or _end_task_holder["task"].done():
+                            _end_task_holder["task"] = asyncio.create_task(_finish_call_after_farewell())
+                        return
+                    from app.api.routes.live_ws import live_broadcaster
+                    from app.services.telephony.call_session import session_manager
+                    await session_manager.add_turn(call_uuid, "user", text)
                     # Caller actually said something — reset the silence
                     # watchdog below so it doesn't nudge/hang up mid-turn.
                     _silence_state["last_activity"] = datetime.utcnow()
                     _silence_state["nudged"] = False
                     await live_broadcaster.user_msg(company.id, live_call_uuid, text)
-                else:
-                    await live_broadcaster.ai_msg(company.id, live_call_uuid, text)
             await self.push_frame(frame, direction)
+
+    class _VoiceContextCompactor(FrameProcessor):
+        """Keep only the useful recent turns before each live LLM request.
+
+        The aggregator retains the complete call transcript by design, but a
+        phone LLM does not need the whole transcript on every turn. This also
+        removes repeated STT fragments such as "Rent ke liye" followed by
+        "Hello. Rent ke liye" that were appearing in the model context.
+        """
+        def __init__(self, max_turns: int = 8):
+            super().__init__()
+            self.max_turns = max_turns
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, LLMContextFrame):
+                messages = frame.context.messages
+                if len(messages) > 1:
+                    system = [m for m in messages if m.get("role") == "system"][:1]
+                    turns = [m for m in messages if m.get("role") != "system"]
+                    compact = []
+                    for msg in turns:
+                        content = str(msg.get("content") or "").strip()
+                        if not content:
+                            continue
+                        if compact and msg.get("role") == compact[-1].get("role") == "user":
+                            previous = str(compact[-1].get("content") or "").strip()
+                            # Exact duplicate or a near-duplicate STT final.
+                            a = " ".join(previous.lower().split())
+                            b = " ".join(content.lower().split())
+                            if a == b or a in b or b in a:
+                                if len(content) > len(previous):
+                                    compact[-1] = {"role": "user", "content": content}
+                                continue
+                        compact.append(msg)
+                    frame.context.set_messages(system + compact[-self.max_turns:])
+            await self.push_frame(frame, direction)
+
+    context_compactor = _VoiceContextCompactor(max_turns=6)
+
+    class _DynamicKnowledgeContext(FrameProcessor):
+        """Inject only the facts relevant to the latest caller turn."""
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, LLMContextFrame):
+                messages = frame.context.messages
+                latest_user = ""
+                for m in reversed(messages):
+                    if m.get("role") == "user":
+                        latest_user = str(m.get("content") or "").strip()
+                        break
+                dynamic = relevant_knowledge(company, latest_user, product_focus)
+                for m in messages:
+                    if m.get("role") == "system":
+                        base = m.get("content", "")
+                        marker = "\n\nTURN-RELEVANT FACTS:\n"
+                        base = base.split(marker, 1)[0]
+                        m["content"] = base + (marker + dynamic if dynamic else "")
+                        break
+            await self.push_frame(frame, direction)
+
+    dynamic_knowledge = _DynamicKnowledgeContext()
 
     pipeline = Pipeline([
         transport.input(),
         stt,
+        _EndCallGuard(),
         _LiveTap("user"),
         context_aggregator.user(),
+        context_compactor,
+        dynamic_knowledge,
         llm,
         _LiveTap("ai"),
         tts,
@@ -453,30 +816,79 @@ async def run_vobiz_stream_pipeline(
     await runner.run(task)
 
 
-def _build_llm_service(settings):
-    """Mirrors settings.LLM_PROVIDER (groq | openai | anthropic) already
-    used elsewhere in this app, so switching providers doesn't require
-    touching this file."""
+def _build_llm_service(settings, voice: bool = False, mode: str = "sales"):
+    """Build the LLM service used by the live call pipeline.
+
+    Voice calls use the dedicated fast model and strict client settings.
+    Post-call analysis continues to use settings.GROQ_MODEL elsewhere.
+    """
     provider = (settings.LLM_PROVIDER or "groq").lower()
 
     if provider == "groq":
         from pipecat.services.groq.llm import GroqLLMService
-        return GroqLLMService(
-            api_key=settings.GROQ_API_KEY,
-            settings=GroqLLMService.Settings(model=settings.GROQ_MODEL),
+
+        class VoiceGroqLLMService(GroqLLMService):
+            def create_client(self, api_key=None, base_url=None, **kwargs):
+                # The upstream BaseOpenAILLMService currently does not forward
+                # arbitrary client kwargs from its constructor. Create the
+                # client explicitly so Groq's SDK cannot retry a 429 for 10-30s.
+                from openai import AsyncOpenAI
+                import httpx
+                return AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    max_retries=0,
+                    timeout=5.0,
+                    http_client=httpx.AsyncClient(
+                        limits=httpx.Limits(
+                            max_keepalive_connections=20,
+                            max_connections=50,
+                            keepalive_expiry=None,
+                        )
+                    ),
+                )
+
+            async def _process_context(self, context):
+                try:
+                    await super()._process_context(context)
+                except Exception as exc:
+                    # A rate limit or transient provider failure must not leave
+                    # a phone caller in silence. The base LLM service has no
+                    # generic error-to-speech hook, so emit one short spoken
+                    # fallback inside the normal response frame boundaries.
+                    logger.warning(f"Voice LLM failed; using fallback: {exc}")
+                    fallback = (
+                        "Ji, ek second. Aapki baat samajh rahi hoon, please ek moment."
+                        if mode != "english"
+                        else "Just a second please, I’m with you."
+                    )
+                    await self._push_llm_text(fallback)
+
+        model = getattr(settings, "GROQ_VOICE_MODEL", None) or settings.GROQ_MODEL
+        voice_settings = VoiceGroqLLMService.Settings(
+            model=model,
+            temperature=0.35,
+            max_tokens=160,
+            extra={"reasoning_effort": "low"} if model.startswith("openai/gpt-oss") else {},
         )
+        return VoiceGroqLLMService(
+            api_key=settings.GROQ_API_KEY,
+            settings=voice_settings,
+            retry_on_timeout=False,
+        )
+
     if provider == "anthropic":
         from pipecat.services.anthropic.llm import AnthropicLLMService
         return AnthropicLLMService(
             api_key=settings.ANTHROPIC_API_KEY,
             settings=AnthropicLLMService.Settings(model=settings.ANTHROPIC_MODEL),
         )
+
     from pipecat.services.openai.llm import OpenAILLMService
     return OpenAILLMService(
         api_key=settings.OPENAI_API_KEY,
         settings=OpenAILLMService.Settings(model=settings.OPENAI_MODEL),
     )
-
 
 def _build_tts_service(
     provider: str, settings, gender: str, voice_override: Optional[str], language_code: str,
@@ -530,38 +942,3 @@ def _build_tts_service(
         f"'{provider}' has no Pipecat streaming path — this function should only "
         f"be called after resolve_tts_provider() has already ruled out 'vobiz'"
     )
-
-
-def _warm_up_llm_provider(settings) -> None:
-    """
-    Fires a tiny, throwaway completion request in the background the
-    moment the pipeline starts, purely to pay Groq/Anthropic/OpenAI's
-    TLS+connection-pool cold-start cost before the caller's real first
-    turn needs an answer. Logs showed this cold start costing ~2s on turn
-    1 (Groq TTFB 2.019s) vs ~0.36s on turn 2 once the connection was warm
-    — this closes that gap for the very first turn too. Fire-and-forget:
-    failures here are silently ignored, since this is purely an
-    optimization and the real request will just pay the cold-start cost
-    itself if this fails.
-    """
-    import asyncio
-
-    async def _ping():
-        try:
-            provider = (settings.LLM_PROVIDER or "groq").lower()
-            if provider == "groq":
-                from groq import AsyncGroq
-                client = AsyncGroq(api_key=settings.GROQ_API_KEY)
-                await client.chat.completions.create(
-                    model=settings.GROQ_MODEL,
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=1,
-                )
-            # Anthropic/OpenAI warmup skipped for now — Groq is the default
-            # LLM_PROVIDER and the one the logs showed the cold-start hit
-            # on. Add equivalent pings here if you switch LLM_PROVIDER and
-            # see the same first-turn TTFB spike on those instead.
-        except Exception as e:
-            logger.debug(f"LLM warmup ping failed (non-fatal, ignored): {e}")
-
-    asyncio.create_task(_ping())

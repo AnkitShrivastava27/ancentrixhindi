@@ -77,13 +77,17 @@ if (typeof window !== 'undefined') {
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
+// login/register/changePassword removed — Firebase Auth (client SDK, see
+// src/lib/firebase.ts + store/index.ts) handles all three directly now.
+// /me is the one thing that still goes through our own backend: it's how
+// we find out our INTERNAL user.id/full_name for a given Firebase session
+// (see GET /auth/me in the backend, and _adoptSession() in store/index.ts).
 export const authApi = {
-  login:    (d: { email: string; password: string }) => apiClient.post('/auth/login', d),
-  me:       () => apiClient.get('/auth/me'),
-  register: (d: { email: string; password: string; full_name: string; license_key: string }) =>
-    apiClient.post('/auth/register', d),
-  changePassword: (d: { current_password: string; new_password: string }) =>
-    apiClient.post('/auth/change-password', d),
+  me: () => apiClient.get('/auth/me'),
+  // Firebase Client SDK sends verification emails directly (Option B).
+  // The backend endpoint remains only for legacy clients.
+  sendVerificationEmail: () => apiClient.post('/auth/send-verification-email'),
+  verificationStatus:    () => apiClient.get('/auth/verification-status'),
 }
 
 // ── Company ───────────────────────────────────────────────────────────────────
@@ -93,10 +97,13 @@ export const companyApi = {
   update: (d: object) => apiClient.patch('/company/', d),
 }
 
-// ── Billing ───────────────────────────────────────────────────────────────────
-export const licenseApi = {
-  getStatus:  (opts?: { refresh?: boolean }) => apiClient.get('/license/status', opts?.refresh ? { refresh: true } : undefined),
-  activate:   (d: { license_key: string; domain?: string }) => apiClient.post('/license/activate', d),
+// ── Billing (Cashfree minute-based plans) — replaces licenseApi ────────────────
+export const paymentsApi = {
+  listPlans:   () => apiClient.get('/payments/plans'),
+  getBalance:  () => apiClient.get('/payments/balance'),
+  createOrder: (d: { plan_type: string; custom_amount?: number; customer_phone: string; customer_email?: string }) =>
+    apiClient.post('/payments/create-order', d),
+  getOrder:    (orderId: string) => apiClient.get(`/payments/orders/${orderId}`),
 }
 
 // ── Leads ─────────────────────────────────────────────────────────────────────
@@ -127,6 +134,7 @@ export const batchesApi = {
   create:  (d: object)  => apiClient.post('/batches/', d),
   delete:  (id: string) => apiClient.delete(`/batches/${id}`),
   preview: (p: object)  => apiClient.get('/batches/preview', p),
+  reuse:   (id: string) => apiClient.post(`/batches/${id}/reuse`, {}),
 }
 
 // ── Schedules ─────────────────────────────────────────────────────────────────
@@ -137,6 +145,22 @@ export const schedulesApi = {
   delete: (id: string) => apiClient.delete(`/schedules/${id}`),
 }
 
+// ── Human Calls (click-to-call bridge) ──────────────────────────────────────
+export const humanCallsApi = {
+  listLeads: (p?: { batch_id?: string }) => apiClient.get('/human-calls/leads', p),
+  dial:      (d: { lead_id: string; agent_phone: string }) => apiClient.post('/human-calls/dial', d),
+  complete:  (callLogId: string, d: { lead_status: string; summary: string; notes?: string }) =>
+    apiClient.post(`/human-calls/${callLogId}/complete`, d),
+}
+
+
+// ── Appointments ──────────────────────────────────────────────────────────────
+export const appointmentsApi = {
+  list: (p?: object) => apiClient.get('/appointments/', p),
+  create: (d: object) => apiClient.post('/appointments/', d),
+  update: (id: string, d: object) => apiClient.patch(`/appointments/${id}`, d),
+  cancel: (id: string) => apiClient.post(`/appointments/${id}/cancel`, {}),
+}
 
 // ── Knowledge ─────────────────────────────────────────────────────────────────
 export const knowledgeApi = {

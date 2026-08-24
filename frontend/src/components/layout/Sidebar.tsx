@@ -9,6 +9,8 @@ const NAV = [
     { href: '/dashboard', label: 'Dashboard', icon: '⊞' },
     { href: '/calls',     label: 'Call Logs',  icon: '↗' },
     { href: '/live',      label: 'Live Calls', icon: '◉' },
+    { href: '/human-calls', label: 'Human Call', icon: '🧑‍💼' },
+    { href: '/appointments', label: 'Appointments', icon: '▣' },
   ]},
   { section: 'Campaigns', items: [
     { href: '/leads',     label: 'Leads',    icon: '◎' },
@@ -20,18 +22,18 @@ const NAV = [
     { href: '/settings',  label: 'Settings',       icon: '⚙' },
   ]},
   { section: 'Account', items: [
-    { href: '/billing', label: 'License', icon: '🔑' },
+    { href: '/billing', label: 'Billing', icon: '💳' },
   ]},
 ]
 
 export default function Sidebar() {
   const pathname = usePathname()
   const router   = useRouter()
-  const { logout, user, license } = useAuthStore()
+  const { logout, user, balance } = useAuthStore()
   const initials = user?.full_name
     ? user.full_name.split(' ').map((n: string) => n[0]).join('').slice(0,2).toUpperCase()
     : (user?.email?.[0] || 'U').toUpperCase()
-  const licenseActive = !!license?.valid
+  const planActive = !!balance?.can_place_calls
 
   return (
     <aside className={styles.aside}>
@@ -46,8 +48,8 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {/* Nav — no locking here; every page is browsable regardless of license
-          status (see app/(app)/layout.tsx for why). The license banner at
+      {/* Nav — no locking here; every page is browsable regardless of plan
+          status (see app/(app)/layout.tsx for why). The plan banner at
           the top of each page and the server-side call-gate are what
           actually matter. */}
       <nav className={styles.nav}>
@@ -70,25 +72,25 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* License mini-widget */}
-      {license && (
-        licenseActive ? (
+      {/* Plan / minutes mini-widget — replaces the old license widget */}
+      {balance && (
+        planActive ? (
           <div className={styles.licenseWidget}>
             <div className={styles.licenseWidgetRow}>
-              <span>License</span>
-              <span className={styles.licenseWidgetStatus}>● {license.tier || 'Active'}</span>
+              <span>Minutes left</span>
+              <span className={styles.licenseWidgetStatus}>● {balance.minutes_remaining.toLocaleString('en-IN')}</span>
             </div>
-            {license.expires_at && (
+            {balance.expires_at && (
               <div className={styles.licenseWidgetExpiry}>
-                Expires {new Date(license.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                Expires {new Date(balance.expires_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
               </div>
             )}
           </div>
         ) : (
           <div className={styles.licenseWarn}>
             <Link href="/pricing" className={styles.licenseWarnLink}>
-              <div className={styles.licenseWarnTitle}>⚠ {license.activated ? 'License Expired' : 'No License'}</div>
-              <div className={styles.licenseWarnSub}>Click to activate</div>
+              <div className={styles.licenseWarnTitle}>⚠ {balance.plan_type === 'none' ? 'No Plan' : balance.is_expired ? 'Plan Expired' : 'Out of Minutes'}</div>
+              <div className={styles.licenseWarnSub}>Click to buy minutes</div>
             </Link>
           </div>
         )

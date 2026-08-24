@@ -3,3 +3,4 @@ src.zip
 .env.local
 .env.local.example
 .next/
+.env

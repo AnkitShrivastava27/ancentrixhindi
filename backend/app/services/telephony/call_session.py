@@ -19,7 +19,8 @@ class CallSessionManager:
                      lead_id: Optional[str], direction: str,
                      mode: str, call_log_id: str,
                      company_snapshot: Optional[Dict] = None,
-                     live_call_uuid: Optional[str] = None) -> Dict:
+                     live_call_uuid: Optional[str] = None,
+                     product_focus: Optional[str] = None) -> Dict:
         from app.core.redis_client import redis_client
         session = {
             "call_control_id": call_control_id,
@@ -38,6 +39,7 @@ class CallSessionManager:
             # different id (request_uuid). /hangup reads this back so its
             # own call_end broadcast lands on the right card too.
             "live_call_uuid":  live_call_uuid,
+            "product_focus":   product_focus,
             # Snapshot of the Company row fields the per-turn reply/TTS path
             # needs (name, agent_name, tts config, prompts, products...).
             # Read from here on every turn instead of re-querying Postgres

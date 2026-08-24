@@ -18,6 +18,8 @@ def _dict(c: CallLog) -> dict:
         "direction": c.direction,
         "status": c.status,
         "mode": c.mode,
+        "channel": c.channel,
+        "dialed_by": c.dialed_by,
         "from_number": c.from_number,
         "to_number": c.to_number,
         "call_control_id": c.call_control_id,
@@ -49,6 +51,7 @@ async def list_calls(
     direction: Optional[str] = None,
     status: Optional[str] = None,
     lead_id: Optional[str] = None,
+    channel: Optional[str] = None,   # ai | human — see CallLog.channel
     limit: int = Query(50, le=200),
     offset: int = 0,
     current_user=Depends(get_current_active_user),
@@ -62,6 +65,8 @@ async def list_calls(
         conds.append(CallLog.status == status)
     if lead_id:
         conds.append(CallLog.lead_id == lead_id)
+    if channel:
+        conds.append(CallLog.channel == channel)
 
     q = select(CallLog).where(and_(*conds)).order_by(CallLog.created_at.desc()).limit(limit).offset(offset)
     total_q = select(func.count()).select_from(CallLog).where(and_(*conds))

@@ -39,9 +39,12 @@
 .numCell { font-size: 13px; font-variant-numeric: tabular-nums; color: #c8cad8; }
 .numCellDim { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text3); }
 
-.deleteAction { display: flex; justify-content: flex-end; }
+.deleteAction { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
 .iconDeleteBtn { width: 28px; height: 28px; border-radius: 6px; background: transparent; border: none; cursor: pointer; color: #3a3d4e; font-size: 12px; display: flex; align-items: center; justify-content: center; transition: all 0.12s; }
 .iconDeleteBtn:hover { background: rgba(242,87,87,0.1); color: var(--red); }
+.reuseBtn { padding: 4px 10px; border-radius: 6px; background: var(--accent-soft); border: 1px solid rgba(200,202,210,0.3); color: #d9dbe1; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.reuseBtn:hover { opacity: 0.85; }
+.reuseBtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Progress bar */
 .barRow { display: flex; align-items: center; gap: 8px; }
@@ -53,6 +56,8 @@
 .createGrid { display: grid; grid-template-columns: 1fr 260px; gap: 16px; max-width: 860px; }
 .formCard { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 .licenseWarn { padding: 9px 18px; background: rgba(242,87,87,0.06); border-bottom: 1px solid rgba(242,87,87,0.15); font-size: 11.5px; color: #f2a3a3; }
+.hintText { font-size: 11.5px; color: var(--text3); margin: 6px 0 0; line-height: 1.5; }
+.agentBadge { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 10px; background: var(--accent-soft); color: var(--text2); white-space: nowrap; }
 
 .stepNav { display: flex; align-items: center; gap: 6px; padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.06); }
 .stepPill { display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 400; background: transparent; color: #4a4d5e; }

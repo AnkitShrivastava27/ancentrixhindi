@@ -62,6 +62,7 @@ async def answer_stream(
     company_id: Optional[str] = None,
     lead_id:    Optional[str] = None,
     mode:       Optional[str] = "support",
+    product_focus: Optional[str] = None,
 ):
     form      = await request.form()
     call_uuid = form.get("CallUUID") or form.get("RequestUUID") or ""
@@ -151,25 +152,48 @@ async def answer_stream(
             live_uuid = call_uuid
             await live_broadcaster.call_start(company_id, live_uuid, to_num or (lead.phone if lead else ""), mode or "support")
 
+        # Count answered calls so the next call receives real previous-call context.
+        # The old flow never updated Lead.call_attempts.
+        existing_session = await session_manager.get(call_uuid)
+        if lead and not existing_session:
+            lead.call_attempts = int(lead.call_attempts or 0) + 1
+            lead.last_called_at = datetime.utcnow()
+            lead.updated_at = datetime.utcnow()
+            await db.commit()
+            await db.refresh(lead)
+            logger.info(
+                f"Streaming call counted | call_uuid={call_uuid[:12]} | "
+                f"lead_id={lead.id} | previous_calls={max(int(lead.call_attempts or 0) - 1, 0)} | "
+                f"current_call={int(lead.call_attempts or 0)}"
+            )
+
         await session_manager.create(
             call_control_id=call_uuid, company_id=company.id,
             lead_id=lead.id if lead else None,
             direction="outbound", mode=mode or "support", call_log_id=call_log.id,
             live_call_uuid=live_uuid,
+            product_focus=product_focus or company.active_product,
         )
 
         agent = company.agent_name or "Alex"
         is_male = (getattr(company, "voice_gender", None) or "female").lower() == "male"
         if mode == "sales":
             first = lead.name.split()[0] if lead and lead.name else ""
-            greeting = (
-                company.greeting_outbound_hi
-                or (
-                    f"Namaste{' ' + first if first else ''} ji! Main {agent} "
-                    f"{'bol raha hoon' if is_male else 'bol rahi hoon'} "
-                    f"{company.name} ki taraf se. Aapka thoda sa time milega kya?"
+            if lead and int(lead.call_attempts or 0) >= 2:
+                greeting = (
+                    f"{first + ' ji, ' if first else ''}"
+                    f"pichli baar ki baat ko continue karte hain. "
+                    f"Aap bataiye, abhi kya update hai?"
                 )
-            )
+            else:
+                greeting = (
+                    company.greeting_outbound_hi
+                    or (
+                        f"Namaste{' ' + first if first else ''} ji! Main {agent} "
+                        f"{'bol raha hoon' if is_male else 'bol rahi hoon'} "
+                        f"{company.name} ki taraf se. Aapka thoda sa time milega kya?"
+                    )
+                )
         else:
             greeting = (
                 company.greeting_inbound_hi
@@ -183,7 +207,7 @@ async def answer_stream(
     from urllib.parse import quote
     ws_url = (
         f"{_media_stream_ws_url()}?company_id={company_id}&amp;lead_id={lead_id or ''}"
-        f"&amp;mode={mode or 'support'}&amp;call_uuid={quote(call_uuid)}"
+        f"&amp;mode={mode or 'support'}&amp;product_focus={quote(product_focus or company.active_product or '')}&amp;call_uuid={quote(call_uuid)}"
         f"&amp;live_uuid={quote(live_uuid)}"
         f"&amp;greeting={quote(greeting)}"
     )
@@ -204,6 +228,7 @@ async def media_stream(
     company_id: Optional[str] = None,
     lead_id:    Optional[str] = None,
     mode:       Optional[str] = "support",
+    product_focus: Optional[str] = None,
     greeting:   Optional[str] = "",
     call_uuid:  Optional[str] = "",
     live_uuid:  Optional[str] = "",
@@ -229,6 +254,7 @@ async def media_stream(
             lead=lead,
             mode=mode or "support",
             greeting=greeting or "",
+            product_focus=product_focus or company.active_product,
         )
     except Exception as e:
         # If this fires within ~1s of "media-stream connected" above, the

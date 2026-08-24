@@ -2,6 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAuthStore } from '../../../store'
 import { useLiveCallStore, type CallStatus } from '../../../store/liveCallStore'
+import { callsApi } from '../../../lib/api'
+import toast from 'react-hot-toast'
 import styles from './live.module.css'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -87,6 +89,20 @@ export default function LivePage() {
   const activeSession = sessions.find(s => s.call_uuid === activeTab) ?? null
   const liveCount     = sessions.filter(s => s.status === 'in_progress').length
   const ringingCount  = sessions.filter(s => s.status === 'ringing').length
+
+  const [hangingUp, setHangingUp] = useState(false)
+  async function handleHangup() {
+    if (!activeSession) return
+    setHangingUp(true)
+    try {
+      await callsApi.hangup(activeSession.call_uuid)
+      toast.success('Call ended')
+    } catch (e: any) {
+      toast.error(e.message || 'Could not hang up — the call may have already ended')
+    } finally {
+      setHangingUp(false)
+    }
+  }
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -210,6 +226,11 @@ export default function LivePage() {
                   )}
                   {activeSession.status === 'no_answer' && (
                     <span className={styles.liveLabelNoAnswer}>No Answer</span>
+                  )}
+                  {(activeSession.status === 'ringing' || activeSession.status === 'in_progress') && (
+                    <button onClick={handleHangup} disabled={hangingUp} className={styles.hangupBtn}>
+                      {hangingUp ? '…' : '☎ Hang Up'}
+                    </button>
                   )}
                 </div>
               </div>

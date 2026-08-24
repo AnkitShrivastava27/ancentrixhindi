@@ -47,8 +47,28 @@ class User(Base):
     id            = Column(String, primary_key=True, default=_uuid)
     email         = Column(String, unique=True, index=True, nullable=False)
     full_name     = Column(String, nullable=False)
-    hashed_password = Column(String, nullable=False)
+    # Firebase Auth (Aug 2026) — replaces local password auth entirely.
+    # firebase_uid is the Firebase ID token's `uid` claim; this table is
+    # now a PROFILE keyed by it, not the identity/credential store itself
+    # (Firebase owns passwords, sessions, and token issuance — see
+    # app/core/firebase.py, app/core/security.py). hashed_password is kept
+    # (nullable now) only so nothing breaks reading old rows; no code path
+    # writes to it anymore.
+    firebase_uid  = Column(String, unique=True, index=True, nullable=True)
+    hashed_password = Column(String, nullable=True)
     is_active     = Column(Boolean, default=True)
+    # Magic-link email verification (Aug 2026) — gates access to /pricing
+    # and the app dashboard until the person has clicked the verification
+    # link Firebase emailed them. Kept in our own DB (rather than reading
+    # the Firebase ID token's `email_verified` claim fresh on every
+    # request) because that claim is baked into the token at mint time and
+    # only updates after the client force-refreshes it — this column is
+    # the source of truth the rest of the backend checks, and is synced
+    # from Firebase in app/core/security.py / GET /auth/verification-status.
+    # NOTE: on an existing production DB (not a fresh create_all()), this
+    # needs a manual migration: ALTER TABLE users ADD COLUMN email_verified
+    # BOOLEAN NOT NULL DEFAULT false;
+    email_verified = Column(Boolean, default=False, nullable=False)
     created_at    = Column(DateTime, default=datetime.utcnow)
     updated_at    = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -72,6 +92,12 @@ class Company(Base):
     services    = Column(Text)   # plain text description of services
     faqs        = Column(Text)   # common Q&A as text
     business_hours = Column(JSON)  # {"Monday": "9-6", ...}
+
+    # Structured AI business knowledge. Keep exact operational facts here
+    # instead of forcing the model to infer them from uploaded documents.
+    # Shape is managed by the Knowledge page/API and may include office,
+    # service areas, appointment rules, policies, languages, etc.
+    business_knowledge = Column(JSON, default=dict)
 
     # Hindi/Hinglish counterparts — used only on the Vobiz (India) route.
     # Hand-written, not auto-translated. Falls back to the English field
@@ -132,15 +158,37 @@ class Company(Base):
     # Admin resets demo_calls_remaining back up via POST
     # /api/v1/admin/companies/{id}/demo-calls before handing the login to
     # the next prospect.
-    is_demo_account       = Column(Boolean, default=False)
+    is_demo_account       = Column(Boolean, default=False, nullable=False, server_default="0")
     demo_calls_remaining  = Column(Integer, default=0)
 
-    # License — one-time activation key (see app.services.license_service)
-    license_key        = Column(String)
-    license_domain      = Column(String)
-    license_tier        = Column(String)   # starter | pro | enterprise
-    license_status       = Column(String, default="inactive")   # inactive | active
-    license_expires_at   = Column(DateTime)
+    # ── Plan / minutes balance (replaces the old yearly license system) ────
+    # Removed: license_key / license_domain / license_tier / license_status /
+    # license_expires_at. A company now has a minute-based plan paid for via
+    # Cashfree (see app/services/payment/cashfree_service.py,
+    # app/services/plan_service.py, app/api/routes/payments.py) instead of
+    # an admin-issued activation key.
+    #
+    # plan_type: trial | basic | standard | custom | none
+    #   - trial:    ₹100 / 10 min, ONE-TIME per company ever (see trial_used)
+    #   - basic:    ₹2500 / 500 min  (₹5/min flat)
+    #   - standard: ₹2000 / 2000 min (₹4/min flat)
+    #   - custom:   customer enters any amount >= ₹1000, minutes = amount / 4.3
+    plan_type          = Column(String, default="none", nullable=False, server_default="none")
+    plan_minutes_total  = Column(Integer, default=0, nullable=False, server_default="0")      # minutes purchased on the current/last paid order
+    plan_rate_per_minute = Column(Float, default=0.0, nullable=False, server_default="0")      # ₹/min actually charged for this plan
+    plan_amount_paid    = Column(Float, default=0.0, nullable=False, server_default="0")       # ₹ actually paid for the current plan
+    plan_purchased_at   = Column(DateTime)
+    plan_expires_at      = Column(DateTime)                 # plan_purchased_at + 365 days
+    # Minutes ACTUALLY consumed under the current plan — incremented by
+    # plan_service.record_minutes_used() as calls complete (see
+    # CallLog.duration_seconds), NOT derived by summing call logs on every
+    # read. Reset to 0 whenever a new plan is purchased (old unused minutes
+    # do not carry over — see plan_service.apply_paid_plan()).
+    plan_minutes_used   = Column(Float, default=0.0, nullable=False, server_default="0")
+    # Trial (₹100/10 min) is one-time-ever per company, even after it
+    # expires or is fully used and the company later buys a paid plan —
+    # this flag is never cleared once set.
+    trial_used          = Column(Boolean, default=False, nullable=False, server_default="0")
 
     # Email identity
     email_from_address = Column(String)
@@ -162,6 +210,7 @@ class Company(Base):
     batches             = relationship("Batch", back_populates="company")
     schedules           = relationship("Schedule", back_populates="company")
     knowledge_documents = relationship("KnowledgeDocument", back_populates="company")
+    appointments        = relationship("Appointment", back_populates="company")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,6 +270,7 @@ class Lead(Base):
     call_logs   = relationship("CallLog", back_populates="lead")
     email_logs  = relationship("EmailLog", back_populates="lead")
     batch_leads = relationship("BatchLead", back_populates="lead")
+    appointments = relationship("Appointment", back_populates="lead")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +287,20 @@ class CallLog(Base):
     status    = Column(String, default="queued")    # queued|ringing|in_progress|completed|failed|no_answer
     mode      = Column(String, default="support")   # support | sales
     provider  = Column(String, default="vobiz")     # vobiz — sole carrier
+    # ai = placed by the AI agent (existing flow). human = manually dialed
+    # by an agent from the Human Call tab — click-to-call bridge (rings the
+    # agent's own phone via Vobiz, then bridges to the lead once answered;
+    # see app/api/routes/human_calls.py). NOT true in-browser WebRTC audio —
+    # this codebase's Vobiz integration is REST/XML call-creation only, no
+    # WebRTC SDK usage anywhere, so the bridge approach is what's actually
+    # verified to work against this account.
+    # Drives the AI/Human split on the Call Log screen.
+    channel   = Column(String, default="ai", nullable=False, server_default="ai")        # ai | human
+    # For channel="human" calls only — set from the post-call dialog the
+    # agent fills in after hangup (lead status / summary / notes), mirroring
+    # what the AI writes to lead_status_after / summary / transcript for AI
+    # calls. dialed_by is the User.id of the agent who placed the call.
+    dialed_by = Column(String, ForeignKey("users.id"), nullable=True)
 
     from_number = Column(String)
     to_number   = Column(String)
@@ -266,6 +330,33 @@ class CallLog(Base):
 
     company = relationship("Company", back_populates="call_logs")
     lead    = relationship("Lead", back_populates="call_logs")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Appointments
+# ─────────────────────────────────────────────────────────────────────────────
+
+class Appointment(Base):
+    __tablename__ = "appointments"
+    id         = Column(String, primary_key=True, default=_uuid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False, index=True)
+    lead_id    = Column(String, ForeignKey("leads.id"), nullable=True, index=True)
+
+    appointment_type = Column(String, default="site_visit", nullable=False)  # site_visit | office_meeting | callback
+    status = Column(String, default="confirmed", nullable=False)  # pending|confirmed|completed|cancelled|rescheduled|no_show
+    product = Column(String)
+    location = Column(String)
+    scheduled_at = Column(DateTime, nullable=False, index=True)
+    duration_minutes = Column(Integer, default=30)
+    notes = Column(Text)
+    created_by = Column(String, default="ai", nullable=False)  # ai | human | admin
+    source_call_id = Column(String, ForeignKey("call_logs.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    company = relationship("Company", back_populates="appointments")
+    lead = relationship("Lead", back_populates="appointments")
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,6 +421,13 @@ class Batch(Base):
     description = Column(Text)
     batch_type  = Column(String, nullable=False)   # voice | email
     provider    = Column(String, default="vobiz")   # vobiz — sole carrier dispatching this batch's calls
+    # ai = existing fully-automated flow (leads dialed by the AI agent).
+    # human = leads in this batch are worked manually from the Human Call
+    # tab (agent dials each lead themselves via the click-to-call bridge —
+    # see app/api/routes/human_calls.py — using the SAME company Vobiz
+    # credentials/number) instead of being auto-dialed. Only meaningful for
+    # batch_type="voice".
+    agent_type  = Column(String, default="ai", nullable=False, server_default="ai")   # ai | human
 
     # Filter used to build this batch (stored for reference)
     filter_criteria = Column(JSON, default=dict)
@@ -402,6 +500,41 @@ class Schedule(Base):
 
     company = relationship("Company", back_populates="schedules")
     batch   = relationship("Batch", back_populates="schedules")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Payments (Cashfree) — replaces the old license/activation-key system
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PaymentOrder(Base):
+    """One row per Cashfree order (one-time recharge — see
+    app/services/payment/cashfree_service.py). Created in "created" status
+    when the frontend asks us to start a checkout; flipped to "paid" or
+    "failed" by the Cashfree webhook (app/api/routes/payments.py), which is
+    also what actually credits the minutes onto Company via
+    app/services/plan_service.apply_paid_plan()."""
+    __tablename__ = "payment_orders"
+    id         = Column(String, primary_key=True, default=_uuid)
+    company_id = Column(String, ForeignKey("companies.id"), nullable=False)
+
+    cf_order_id = Column(String, unique=True, index=True, nullable=False)  # our order_id, sent to Cashfree
+    cf_cf_order_id = Column(String)   # Cashfree's own internal "cf_order_id" from the create-order response
+
+    plan_type  = Column(String, nullable=False)   # trial | basic | standard | custom
+    minutes    = Column(Integer, nullable=False)
+    rate_per_minute = Column(Float, nullable=False)
+    amount     = Column(Float, nullable=False)     # ₹, order_amount sent to Cashfree
+
+    status     = Column(String, default="created")  # created | processing | paid | failed
+    payment_session_id = Column(String)   # returned by Cashfree create-order, used by the frontend checkout widget
+
+    raw_create_response = Column(JSON)
+    raw_webhook_payload  = Column(JSON)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    paid_at    = Column(DateTime)
+
+    company = relationship("Company")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

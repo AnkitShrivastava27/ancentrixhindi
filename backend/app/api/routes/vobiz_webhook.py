@@ -2661,6 +2661,7 @@ from app.services.llm.rag_service import rag_service
 from app.services.telephony.call_session import session_manager
 from app.services.telephony.vobiz_service import get_vobiz_voice, _get_base_url, vobiz_service
 from app.api.routes.live_ws import live_broadcaster
+from app.services import plan_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -3373,7 +3374,7 @@ async def _build_reply_response(
             # fallback-path safety valve, not the real latency fix.
             raw = await llm_service.generate_response(
                 messages=session["history"], system_prompt=prompt,
-                max_tokens=48, temperature=0.9,
+                max_tokens=80, temperature=0.9,
             )
             return _trim_to_sentence(raw)
         except Exception as e:
@@ -3602,55 +3603,80 @@ async def _finalize_hangup(
             logger.debug(f"Batch lock clear error: {e}")
 
     if not session:
-        # The call never actually connected — busy, rejected, unreachable,
-        # no answer, etc. session_manager only creates a session once the
-        # media stream connects (i.e. someone picked up), so there's
-        # nothing in Redis to finalize the usual way. Previously this just
-        # `return`ed here, silently leaving the CallLog stuck at
-        # status="ringing" forever and the lead untouched — a busy/
-        # unanswered number just vanished from tracking with no visible
-        # outcome. Vobiz's hangup payload still tells us what happened via
-        # HangupCause/HangupCauseName, so use that to close the loop.
-        cause_upper = f"{hangup_cause} {hangup_cause_name}".upper()
-        if "BUSY" in cause_upper:
-            outcome = "busy"
-        elif any(k in cause_upper for k in ("NO_ANSWER", "NO ANSWER", "TIMEOUT", "RINGING")):
-            outcome = "no_answer"
-        elif any(k in cause_upper for k in ("REJECT", "DECLINE", "CANCEL")):
-            outcome = "rejected"
-        elif call_status_field and call_status_field.lower() not in ("completed",):
-            outcome = "failed"
-        else:
-            # Answered per Vobiz but we have no session — media stream
-            # never connected (e.g. a network/websocket hiccup). Treat as
-            # no_answer rather than leaving it silently stuck.
-            outcome = "no_answer"
-
+        # A duplicate Vobiz webhook, or a race with another cleanup path, can
+        # arrive after the Redis session has already been consumed. Never turn
+        # an already-completed/answered call into "no_answer" just because the
+        # Redis session is gone. Recover the authoritative CallLog first.
         async with AsyncSessionLocal() as db:
             r = await db.execute(select(CallLog).where(CallLog.call_control_id == call_uuid))
-            log = r.scalar_one_or_none()
-            if log and log.status == "ringing":
-                log.status = outcome
-                log.ended_at = datetime.utcnow()
-                await db.commit()
+            recovered_log = r.scalar_one_or_none()
 
-                if log.lead_id:
-                    lead = await _get_lead(str(log.lead_id), db)
-                    if lead and lead.status in ("new", "contacted"):
-                        # "called" == the frontend's "📵 Called — No Answer"
-                        # bucket — used for busy/rejected/failed too, since
-                        # none of those mean the lead was ever actually
-                        # reached; distinguishing them further belongs in
-                        # the call log detail, not the lead pipeline stage.
-                        lead.status = "called"
-                        lead.updated_at = datetime.utcnow()
-                        await db.commit()
-            try:
-                await live_broadcaster.call_no_answer(company_id or (log.company_id if log else None), call_uuid, outcome)
-            except Exception:
-                pass
-        logger.info(f"Call never connected | call_uuid={call_uuid[:12]} | outcome={outcome} | cause={hangup_cause_name or hangup_cause}")
-        return
+            if recovered_log and recovered_log.status == "completed":
+                logger.info(
+                    f"Duplicate/late hangup ignored; call already finalized | "
+                    f"call_uuid={call_uuid[:12]}"
+                )
+                return
+
+            if recovered_log and recovered_log.status == "in_progress":
+                # The call was answered and the CallLog proves it. Reconstruct
+                # the small session shape needed by the normal finalizer. This
+                # prevents the old race where session_manager.end() won first,
+                # then /hangup saw no session and incorrectly wrote no_answer.
+                recovered_history = recovered_log.conversation_history or []
+                recovered_started = recovered_log.started_at or recovered_log.created_at or datetime.utcnow()
+                session = {
+                    "call_control_id": call_uuid,
+                    "company_id": str(recovered_log.company_id),
+                    "lead_id": str(recovered_log.lead_id) if recovered_log.lead_id else lead_id_param,
+                    "call_log_id": str(recovered_log.id),
+                    "history": recovered_history,
+                    "started_at": recovered_started.isoformat(),
+                    "live_call_uuid": call_uuid,
+                    "product_focus": None,
+                }
+                logger.warning(
+                    f"Recovered answered call without Redis session | "
+                    f"call_uuid={call_uuid[:12]} | call_log_id={recovered_log.id}"
+                )
+            else:
+                # No connected session and no answered CallLog: this is the
+                # genuine busy/no-answer/rejected path. Preserve the existing
+                # behavior for those calls.
+                cause_upper = f"{hangup_cause} {hangup_cause_name}".upper()
+                if "BUSY" in cause_upper:
+                    outcome = "busy"
+                elif any(k in cause_upper for k in ("NO_ANSWER", "NO ANSWER", "TIMEOUT", "RINGING")):
+                    outcome = "no_answer"
+                elif any(k in cause_upper for k in ("REJECT", "DECLINE", "CANCEL")):
+                    outcome = "rejected"
+                elif call_status_field and call_status_field.lower() not in ("completed",):
+                    outcome = "failed"
+                else:
+                    outcome = "no_answer"
+
+                if recovered_log and recovered_log.status == "ringing":
+                    recovered_log.status = outcome
+                    recovered_log.ended_at = datetime.utcnow()
+                    await db.flush()
+                    if recovered_log.lead_id:
+                        lead = await _get_lead(str(recovered_log.lead_id), db)
+                        if lead and lead.status in ("new", "contacted"):
+                            lead.status = "called"
+                            lead.updated_at = datetime.utcnow()
+                    await db.commit()
+                try:
+                    await live_broadcaster.call_no_answer(
+                        company_id or (recovered_log.company_id if recovered_log else None),
+                        call_uuid, outcome,
+                    )
+                except Exception:
+                    pass
+                logger.info(
+                    f"Call never connected | call_uuid={call_uuid[:12]} | "
+                    f"outcome={outcome} | cause={hangup_cause_name or hangup_cause}"
+                )
+                return
 
     history     = session.get("history", [])
     call_log_id = session.get("call_log_id")
@@ -3668,11 +3694,80 @@ async def _finalize_hangup(
             company = await _get_company(company_id, db)
         if company:
             try:
+                lead_ctx = ""
+                async with AsyncSessionLocal() as _db2:
+                    if lead_id:
+                        _lead2 = await _get_lead(lead_id, _db2)
+                        if _lead2:
+                            lead_ctx = f"status={_lead2.status}; key_info={_lead2.key_info or {}}; notes={(_lead2.notes or '')[-700:]}"
+                product_ctx = ""
+                focus = session.get("product_focus") or company.active_product
+                if focus:
+                    from app.services.llm.prompts import find_product, _product_text
+                    product = find_product(company, focus)
+                    product_ctx = _product_text(product) if product else "UNVERIFIED PRODUCT FOCUS: do not infer product facts."
                 analysis = await llm_service.analyze_call(
-                    transcript, f"{company.name} — {company.description or ''}"
+                    transcript,
+                    f"{company.name} | industry={company.industry or ''} | description={company.description or ''} | verified_product={product_ctx}",
+                    lead_ctx,
                 )
             except Exception as e:
                 logger.error(f"Analysis error: {e}")
+
+    # Deterministic intent override: explicit follow-up requests must win over
+    # a conservative LLM result such as "contacted". This also protects the
+    # database when the post-call LLM analysis fails.
+    low_tx = transcript.casefold()
+    explicit_site_visit = any(x in low_tx for x in (
+        "site visit", "site-visit", "site pe", "site par", "site mein", "site me",
+        "site dekh", "site jaana", "site jana", "site ja", "property dekh",
+        "property visit", "property dekhna", "ghar dekh", "property dekhne",
+        "visit kar", "visit chahi", "visit ke liye", "visit karna",
+        "visit karenge", "visit pe", "visit par",
+    ))
+    explicit_meeting = any(x in low_tx for x in (
+        "meeting", "milna hai", "milne", "office aana", "office meeting"
+    ))
+    explicit_callback = any(x in low_tx for x in (
+        "callback", "call back", "baad mein call", "baad me call",
+        "phir call", "call kar lena", "dobara call"
+    ))
+    explicit_human = any(x in low_tx for x in (
+        "human", "human call", "human se baat", "human se connect",
+        "insaan", "insaan se baat", "kisi insaan", "aadmi se baat",
+        "agent se baat", "real agent", "specialist", "manager se baat",
+        "representative", "person se baat", "kisi se baat",
+        "team se baat", "team se connect",
+    ))
+    if explicit_site_visit:
+        analysis.update({
+            "lead_status": "hot",
+            "intent": "site_visit",
+            "follow_up_required": True,
+            "follow_up_note": "Admin to confirm site visit manually.",
+        })
+        if not analysis.get("summary") or "no structured" in str(analysis.get("summary")).casefold():
+            analysis["summary"] = "Customer requested a site visit. Admin needs to confirm the visit manually."
+    elif explicit_meeting and analysis.get("lead_status") not in ("closed_won", "closed_lost", "do_not_call"):
+        analysis.update({"lead_status": "warm", "intent": "meeting", "follow_up_required": True, "follow_up_note": "Admin to confirm meeting manually."})
+    elif explicit_human and analysis.get("lead_status") not in ("closed_won", "closed_lost", "do_not_call"):
+        analysis.update({
+            "lead_status": "warm",
+            "intent": "human_followup",
+            "follow_up_required": True,
+            "follow_up_note": "Admin to arrange human follow-up.",
+        })
+        analysis["transferred_to_human"] = True
+        if not analysis.get("summary"):
+            analysis["summary"] = "Customer requested to speak with a human representative. Admin should arrange human follow-up."
+        analysis["note"] = "Customer requested a human representative; admin to follow up."
+    elif explicit_callback and analysis.get("lead_status") not in ("closed_won", "closed_lost", "do_not_call"):
+        analysis.update({"lead_status": "warm", "intent": "wants_callback", "follow_up_required": True, "follow_up_note": "Admin to arrange callback."})
+
+    # Never persist the old generic fallback text. If analysis somehow ended
+    # up empty, derive a transcript-grounded result before touching CallLog.
+    if not analysis:
+        analysis = llm_service._deterministic_call_analysis(transcript)
 
     duration = 0
     if session.get("started_at"):
@@ -3690,14 +3785,43 @@ async def _finalize_hangup(
     await live_broadcaster.call_end(company_id, session.get("live_call_uuid") or call_uuid, duration)
 
     async with AsyncSessionLocal() as db:
-        await _update_log(call_log_id, {
+        # The websocket session normally carries call_log_id. If the session was
+        # cleaned up/raced before the hangup webhook, recover the CallLog by the
+        # provider CallUUID instead of silently skipping the entire post-call save.
+        resolved_call_log_id = call_log_id
+        if not resolved_call_log_id:
+            r = await db.execute(select(CallLog).where(CallLog.call_control_id == call_uuid))
+            existing_log = r.scalar_one_or_none()
+            resolved_call_log_id = str(existing_log.id) if existing_log else None
+            if resolved_call_log_id:
+                logger.warning(
+                    f"Recovered CallLog by call_control_id during hangup | call_uuid={call_uuid[:12]}"
+                )
+
+        updates = {
             "status": "completed", "ended_at": datetime.utcnow(),
             "duration_seconds": duration, "conversation_history": history,
             "transcript": transcript, "summary": analysis.get("summary", ""),
             "sentiment": analysis.get("sentiment", ""), "intent": analysis.get("intent", ""),
             "lead_status_after": analysis.get("lead_status", ""),
             "transferred_to_human": analysis.get("transferred_to_human", False),
-        }, db)
+        }
+        await _update_log(resolved_call_log_id, updates, db)
+
+        # If the CallLog still cannot be resolved, create/update it from the
+        # webhook UUID so a completed answered call is never lost from Call Logs.
+        if not resolved_call_log_id:
+            r = await db.execute(select(CallLog).where(CallLog.call_control_id == call_uuid))
+            existing_log = r.scalar_one_or_none()
+            if existing_log:
+                for k, v in updates.items():
+                    setattr(existing_log, k, v)
+                await db.commit()
+                resolved_call_log_id = str(existing_log.id)
+            else:
+                logger.error(
+                    f"Unable to resolve CallLog after answered hangup | call_uuid={call_uuid[:12]} | lead_id={lead_id}"
+                )
 
         if lead_id:
             lead = await _get_lead(lead_id, db)
@@ -3713,18 +3837,62 @@ async def _finalize_hangup(
                 ki = analysis.get("key_info", {})
                 if ki:
                     lead.key_info = {**(lead.key_info or {}), **{k: v for k, v in ki.items() if v}}
+                # Persist a short, actionable note. Never copy the full AI summary
+                # or transcript into the lead Notes field.
+                intent = analysis.get("intent")
+                if intent == "site_visit":
+                    compact_note = "Customer requested a site visit. Admin to confirm manually."
+                elif intent == "meeting":
+                    compact_note = "Customer requested a meeting. Admin to confirm manually."
+                elif intent == "wants_callback":
+                    compact_note = "Customer requested a callback. Admin to follow up."
+                elif intent == "human_followup":
+                    compact_note = "Customer requested a human representative. Admin to follow up."
+                elif intent == "not_interested":
+                    compact_note = "Customer is not interested."
+                else:
+                    # Prefer the analyzer's dedicated CURRENT lead note. Fall
+                    # back to its short summary only if the note is absent.
+                    summary = " ".join(str(analysis.get("note") or analysis.get("summary") or "").split())
+                    compact_note = summary[:220].rstrip() if summary else "No clear next action captured."
+
+                # Lead Notes is the CURRENT lead state, not call history.
+                # Full transcript/history remains in CallLog.
+                compact_note = " ".join(str(compact_note or "").split()).strip()
+                if len(compact_note) > 220:
+                    compact_note = compact_note[:217].rsplit(" ", 1)[0] + "..."
+                lead.notes = compact_note or "No clear next action captured."
+                # Streaming calls increment this at answer-stream. Record-mode
+                # calls do not, so only increment here when this call has not
+                # already been counted by its last_called_at timestamp.
+                try:
+                    started_dt = datetime.fromisoformat(session["started_at"]) if session.get("started_at") else None
+                except Exception:
+                    started_dt = None
+                if not started_dt or not lead.last_called_at or lead.last_called_at < started_dt:
+                    lead.call_attempts = int(lead.call_attempts or 0) + 1
+                lead.last_called_at = datetime.utcnow()
                 lead.updated_at = datetime.utcnow()
                 await db.commit()
 
-    # NOTE: minutes/billing deduction removed here — the old
-    # app.services.minutes_service + Firebase Firestore lookup this block
-    # used to call doesn't exist anywhere in this project (confirmed —
-    # there's no minutes_service.py or firebase_admin_init.py). It was
-    # silently failing every call (see the repeated "Minutes deduction
-    # error" warnings in your logs) and doing nothing. If you have a
-    # minutes/billing system in this project's SQL models instead of
-    # Firebase, wire it in here — otherwise leave this removed rather
-    # than keep a permanently-failing no-op.
+    # ── Minute deduction (Cashfree plan system) ─────────────────────────────
+    # This used to call a Firebase-backed minutes_service that didn't exist
+    # anywhere in this project — silently failing every call (see the old
+    # "Minutes deduction error" log spam) and doing nothing. Now backed by
+    # app/services/plan_service.py against Company.plan_minutes_used
+    # (plain SQL column, no external service). `duration` here is the same
+    # value just written to CallLog.duration_seconds above — kept as ONE
+    # elapsed-time calculation (session["started_at"] -> now) so the
+    # minutes a company is billed for always match what the Call Log
+    # screen shows for this same call.
+    if duration > 0 and company_id:
+        async with AsyncSessionLocal() as db:
+            company = await _get_company(company_id, db)
+            if company:
+                plan_service.record_minutes_used(company, duration)
+                await db.commit()
+            else:
+                logger.warning(f"Minute deduction skipped — no company for company_id={company_id} | call_uuid={call_uuid[:12]}")
 
     await asyncio.sleep(30)
     _hung_up.discard(call_uuid)

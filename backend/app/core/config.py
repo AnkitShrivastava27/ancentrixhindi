@@ -2,11 +2,36 @@
 Central configuration — reads from .env (production) or .env.local (dev).
 All optional fields default to None so the app starts without crashing.
 """
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 from typing import List, Optional
 
 
 class Settings(BaseSettings):
+    # BUG FIX: many .env templates (including the one I generated) write
+    # an optional/"leave blank to use default" field as `KEY=` — present,
+    # but empty. To a human that reads as "not set." To pydantic-settings
+    # it's a real empty-string VALUE, which then gets fed into that
+    # field's type coercion — fine for a plain `str` field, but a hard
+    # crash for anything else: `DB_STATEMENT_CACHE_SIZE=` (Optional[int])
+    # raised "Input should be a valid integer... input_value=''". This
+    # isn't a one-field problem — 27 fields in this class alone are
+    # int/float/bool/Optional[int]/Optional[float], every one of them a
+    # landmine under the exact same blank-line pattern. Rather than patch
+    # each one as it's individually hit, this strips any blank-string
+    # value out of the merged env data BEFORE pydantic's per-field type
+    # coercion runs, so a blank line behaves exactly like an absent
+    # line: the field's own default applies. mode="before" + a dict
+    # comprehension over the raw merged-source data — verified against
+    # the actual pinned pydantic-settings==2.6.1, including alongside the
+    # ALLOWED_ORIGINS alias-based fix below (the two don't conflict).
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_env_vars_become_unset(cls, data):
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if v != ""}
+        return data
+
     # ── App ───────────────────────────────────────────────────────────────
     APP_NAME: str = "AI Call Center"
     APP_VERSION: str = "5.0.0"
@@ -49,36 +74,86 @@ class Settings(BaseSettings):
     # ── Redis ─────────────────────────────────────────────────────────────
     REDIS_URL: str = "redis://localhost:6379"
 
+    # ── Firebase Auth ─────────────────────────────────────────────────────
+    # Replaces local email/password + JWT auth entirely (see
+    # app/core/firebase.py, app/core/security.py). The backend verifies
+    # Firebase ID tokens via the Admin SDK — it never sees or stores
+    # passwords. Provide the service account ONE of these two ways:
+    #   - FIREBASE_SERVICE_ACCOUNT_JSON: paste the whole downloaded JSON as
+    #     a single-line string (easiest on platforms without file mounts).
+    #   - GOOGLE_APPLICATION_CREDENTIALS: path to that JSON file on disk.
+    # If neither is set, falls back to Application Default Credentials
+    # (works automatically on Cloud Run/GCP with an attached service
+    # account, fails loudly elsewhere — see app/core/firebase.py).
+    FIREBASE_PROJECT_ID: Optional[str] = None
+    FIREBASE_SERVICE_ACCOUNT_JSON: Optional[str] = None
+    GOOGLE_APPLICATION_CREDENTIALS: Optional[str] = None
+
     # ── JWT ───────────────────────────────────────────────────────────────
-    # These three are the ONLY source of truth for token signing/expiry —
-    # app/core/security.py reads them from `settings`, not from
-    # os.environ directly, and no longer hardcodes its own expiry. Change
-    # ACCESS_TOKEN_EXPIRE_MINUTES in .env if 24h isn't what you want;
-    # nothing else needs editing.
+    # No longer used for session tokens (Firebase issues those now) — kept
+    # only because a couple of internal one-off signed links could still
+    # use jose/jwt directly in the future. Safe to leave at the default;
+    # nothing security-sensitive depends on it anymore.
     JWT_SECRET_KEY: str = "change-me-jwt-secret"
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24h
-
-    # ── Allowed users (no self-signup) ───────────────────────────────────
-    # Format: "email1:password1,email2:password2". Each pair is provisioned
-    # into the local `users` table at startup (see app/main.py) — created if
-    # missing, password updated if you change it here and restart. There is
-    # no public /register endpoint; only these accounts can log in.
-    ALLOWED_USERS: Optional[str] = None
 
     # ── CORS ──────────────────────────────────────────────────────────────
-    ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
+    # BUG FIX: a plain List[str] field crashes on startup if the .env value
+    # is a comma-separated string instead of a JSON array — pydantic-
+    # settings auto-JSON-decodes any env var backing a "complex" type
+    # (list/dict/set/...), and that decode happens in the settings SOURCE
+    # layer, BEFORE any field_validator gets a chance to run (confirmed by
+    # actually reproducing the crash — a validator alone does not fix
+    # this). The fix here is deliberately version-independent — verified
+    # against pydantic-settings==2.6.1 specifically, the version actually
+    # pinned in requirements.txt (an earlier attempt using pydantic-
+    # settings' NoDecode marker worked on 2.15.0 but doesn't exist at all
+    # in 2.6.1 — checked directly, not assumed): read it as a plain `str`,
+    # which never triggers the complex-type auto-decode in ANY version,
+    # via `validation_alias` so the .env key stays ALLOWED_ORIGINS, and
+    # expose the real List[str] as a computed @property under the same
+    # public name every caller already uses — a property reads identically
+    # to a field from the outside, so main.py's CORS middleware setup
+    # needs zero changes.
+    allowed_origins_raw: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        validation_alias="ALLOWED_ORIGINS",
+    )
 
-    # ── Public base URL ───────────────────────────────────────────────────
-    # This server's own public URL (ngrok/Cloudflare tunnel in dev, real
-    # domain in production) — used to build Vobiz answer/hangup webhook
-    # URLs and the license activation "domain". Was TELNYX_WEBHOOK_BASE_URL;
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        v = self.allowed_origins_raw.strip()
+        if v.startswith("["):
+            import json
+            return json.loads(v)
+        return [origin.strip() for origin in v.split(",") if origin.strip()]
+
+    # ── Public base URL(s) ────────────────────────────────────────────────
+    # These are used for two DIFFERENT purposes and deliberately kept
+    # separate — collapsing them into one setting was a real bug (Aug
+    # 2026): Cashfree's return_url is only ever navigated to by the
+    # PERSON'S OWN BROWSER after checkout, so it never needs to be
+    # internet-reachable — http://localhost:3000 works fine for local
+    # dev. notify_url is called SERVER-TO-SERVER by Cashfree itself and
+    # genuinely does need a public tunnel (ngrok/cloudflared) in local
+    # dev. Forcing both through the same tunnel URL meant a flaky local
+    # tunnel dying broke the person's own post-payment redirect, which
+    # never needed to leave their machine in the first place.
+    #
+    # PUBLIC_BASE_URL: this backend's own public address — Vobiz
+    # answer/hangup webhooks, human-call bridge webhooks, and Cashfree's
+    # notify_url all use this. Needs a real tunnel/domain even in local
+    # dev, since external services call it. Was TELNYX_WEBHOOK_BASE_URL;
     # renamed since it's not Telnyx-specific. Old var name still read as a
     # fallback by vobiz_service._get_base_url() env-file check.
     PUBLIC_BASE_URL: Optional[str] = None
+    # FRONTEND_PUBLIC_URL: where the Next.js app is reachable, for
+    # building Cashfree's return_url. In local dev this is just
+    # http://localhost:3000 — no tunnel needed. Falls back to
+    # PUBLIC_BASE_URL if unset, so an existing single-domain production
+    # setup (one domain serving both frontend and backend) keeps working
+    # unchanged.
+    FRONTEND_PUBLIC_URL: Optional[str] = None
 
     # ── Vobiz (sole telephony provider) ──────────────────────────────────
     # Real (non-demo) companies must still set their own vobiz_auth_id/
@@ -105,15 +180,41 @@ class Settings(BaseSettings):
     # a code change.
     USE_STREAMING_CALLS: bool = True
 
-    # ── License server (one-time activation key) ─────────────────────────
-    # Points at your hosted activationkey.py instance.
-    # DEPRECATED — the license server used to be a separate service you'd
-    # point this at. It's now merged directly into this backend (see
-    # app/api/routes/admin.py + app/services/license_service.py, which now
-    # read/write the local `licenses` table instead of making HTTP calls
-    # here). Left defined only so nothing breaks if some old .env still
-    # sets it; nothing in the app reads it anymore.
+    # ── License server — REMOVED ───────────────────────────────────────────
+    # The yearly license/activation-key system (app/services/license_service.py,
+    # app/api/routes/license.py, Company.license_*) has been replaced by the
+    # Cashfree minute-based plan system below. LICENSE_SERVER_URL is left
+    # defined ONLY so an old .env with this key set doesn't crash Settings
+    # parsing (extra="ignore" would handle that anyway) — nothing reads it.
     LICENSE_SERVER_URL: str = "http://localhost:8100"
+
+    # ── Cashfree Payment Gateway ─────────────────────────────────────────
+    # Get these from Merchant Dashboard -> Developers -> API Keys.
+    # Use the SANDBOX keys + CASHFREE_ENV=sandbox for testing before you
+    # have a live/production Cashfree account approved.
+    CASHFREE_CLIENT_ID: Optional[str] = None
+    CASHFREE_CLIENT_SECRET: Optional[str] = None
+    # Separate secret from Merchant Dashboard -> Developers -> Webhooks ->
+    # your endpoint's "Webhook Secret" — NOT the same as CLIENT_SECRET.
+    # Used only to verify inbound webhook signatures.
+    CASHFREE_WEBHOOK_SECRET: Optional[str] = None
+    CASHFREE_ENV: str = "sandbox"          # sandbox | production
+    CASHFREE_API_VERSION: str = "2023-08-01"
+
+    # ── Plan pricing (₹) — see app/services/plan_service.py ──────────────
+    PLAN_TRIAL_AMOUNT: float = 100.0
+    PLAN_TRIAL_MINUTES: int = 10
+    PLAN_BASIC_AMOUNT: float = 2500.0
+    PLAN_BASIC_MINUTES: int = 500
+    # Standard: 2000 minutes @ ₹4/min = ₹8000 total (NOT ₹2000 — that was
+    # this constant's own bug on first pass, caught by the plan_service
+    # unit check below before it ever shipped: amount must be minutes ×
+    # rate, not the minutes figure itself).
+    PLAN_STANDARD_AMOUNT: float = 8000.0
+    PLAN_STANDARD_MINUTES: int = 2000
+    PLAN_CUSTOM_RATE_PER_MINUTE: float = 4.3
+    PLAN_CUSTOM_MIN_AMOUNT: float = 1000.0
+    PLAN_EXPIRY_DAYS: int = 365
 
     # Bearer token that gates every /api/v1/admin/* route (license
     # generation, user list, password resets) and the admin.html panel.
@@ -158,7 +259,14 @@ class Settings(BaseSettings):
     # ── LLM ───────────────────────────────────────────────────────────────
     LLM_PROVIDER: str = "groq"                      # groq | openai | anthropic
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"    # fixed model
+    # BUG FIX (Aug 2026): Groq deprecated llama-3.3-70b-versatile on
+    # June 17, 2026 (see console.groq.com/docs/deprecations) — it now
+    # 404s with "model_not_found" on every request, breaking both live
+    # call responses AND post-call summary/sentiment analysis (both go
+    # through this same setting — see llm_service.py and
+    # vobiz_stream_pipeline.py's GroqLLMService.Settings). Groq's own
+    # docs recommend openai/gpt-oss-120b as the direct replacement.
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: Optional[str] = None

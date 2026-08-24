@@ -12,6 +12,9 @@
 .pillRinging { padding: 3px 10px; border-radius: 20px; background: rgba(245,166,35,0.12); border: 1px solid rgba(245,166,35,0.25); font-size: 11px; color: var(--amber); font-weight: 600; }
 .pillActive { padding: 3px 10px; border-radius: 20px; background: rgba(62,207,142,0.12); border: 1px solid rgba(62,207,142,0.25); font-size: 11px; color: var(--green); font-weight: 600; }
 .reconnectBtn { padding: 5px 12px; border-radius: 7px; background: var(--accent-soft); border: 1px solid rgba(200,202,210,0.3); color: #d9dbe1; font-size: 12px; cursor: pointer; font-family: inherit; }
+.hangupBtn { margin-left: 10px; padding: 6px 14px; border-radius: 7px; background: rgba(242,87,87,0.12); border: 1px solid rgba(242,87,87,0.35); color: #f25757; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+.hangupBtn:hover { background: rgba(242,87,87,0.2); }
+.hangupBtn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .emptyState { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: #3a3d4e; }
 .emptyIcon { font-size: 40px; }

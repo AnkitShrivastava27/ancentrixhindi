@@ -1,8 +1,10 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { callsApi, leadsApi } from '@/lib/api'
+import Link from 'next/link'
+import { callsApi, leadsApi, batchesApi, schedulesApi } from '@/lib/api'
 import { StatCard } from '@/components/ui'
 import { useAuthStore } from '@/store'
+import { useLiveCallStore, CallSession } from '@/store/liveCallStore'
 import styles from './dashboard.module.css'
 
 const PIPELINE = [
@@ -49,32 +51,144 @@ function SCard({
   )
 }
 
-function LicenseCard({ license }: { license: any }) {
-  if (!license) return null
-  const active = !!license.valid
+// ── Minutes-remaining card (small) — replaces the old license card ─────────
+function MinutesCard({ balance }: { balance: any }) {
+  if (!balance) return null
+  const hasPlan = balance.plan_type !== 'none'
+  const low = !hasPlan || balance.is_expired || balance.minutes_remaining <= 0
   return (
-    <div className={`${styles.licenseCard} ${active ? styles.licenseCardActive : styles.licenseCardInactive}`}>
-      <div className={styles.licenseRow}>
-        <div>
-          <div className={styles.licenseLabel}>License</div>
-          <div className={styles.licenseSub} style={{ color: active ? '#5a5d70' : '#f25757' }}>
-            {active
-              ? `${(license.tier || 'plan').replace(/^\w/, (c:string) => c.toUpperCase())} tier — expires ${license.expires_at ? new Date(license.expires_at).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '?'}`
-              : `⚠ ${license.activated ? 'License expired' : 'No license activated'} — features locked`}
+    <Link href="/billing" className={`${styles.minutesCard} ${low ? styles.minutesCardLow : styles.minutesCardOk}`}>
+      <div className={styles.minutesLabel}>Minutes Remaining</div>
+      {hasPlan ? (
+        <>
+          <div className={styles.minutesValue}>
+            {balance.minutes_remaining.toLocaleString('en-IN')} <small>/ {balance.minutes_total.toLocaleString('en-IN')}</small>
           </div>
-        </div>
-        <div>
-          <div className={styles.licenseStatus} style={{ color: active ? '#3ecf8e' : '#f25757' }}>
-            {active ? '● Active' : '● Inactive'}
-          </div>
-        </div>
+          {low ? (
+            <div className={styles.minutesSubWarn}>⚠ {balance.is_expired ? 'Plan expired' : 'Out of minutes'} — buy more</div>
+          ) : (
+            <div className={styles.minutesSub}>{balance.plan_type} plan · ₹{balance.rate_per_minute}/min</div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className={styles.minutesValue}>—</div>
+          <div className={styles.minutesSubWarn}>⚠ No plan — buy minutes to start calling</div>
+        </>
+      )}
+    </Link>
+  )
+}
+
+// ── Live call tracking card (small, "third smaller card") ──────────────────
+// Ticks its own duration display every second off started_at/answered_at —
+// doesn't wait on a WS event to refresh the number.
+function LiveCallCard() {
+  const sessions = useLiveCallStore(s => s.sessions)
+  const [, forceTick] = useState(0)
+
+  useEffect(() => {
+    const t = setInterval(() => forceTick(x => x + 1), 1000)
+    return () => clearInterval(t)
+  }, [])
+
+  const active: CallSession | undefined = sessions.find(s => s.status === 'ringing' || s.status === 'in_progress')
+
+  if (!active) {
+    return (
+      <div className={styles.liveCallCard}>
+        <div className={styles.liveCallLabel}>Live Call</div>
+        <div className={styles.liveCallEmpty}>No call in progress</div>
       </div>
-    </div>
+    )
+  }
+
+  const since = active.status === 'in_progress' && active.answered_at ? active.answered_at : active.started_at
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - new Date(since).getTime()) / 1000))
+
+  return (
+    <Link href="/live" className={`${styles.liveCallCard} ${styles.liveCallCardActive}`}>
+      <div className={styles.liveCallLabel}><span className={styles.liveDot} /> Live Call</div>
+      <div className={styles.liveCallPhone}>{active.phone}</div>
+      <div className={styles.liveCallMeta}>
+        {active.status === 'ringing' ? 'Ringing…' : `In progress · ${fmt(elapsedSec)}`}
+        {active.lead_name ? ` · ${active.lead_name}` : ''}
+      </div>
+    </Link>
+  )
+}
+
+// ── Active batch / campaign card (large, "third large card") ───────────────
+// Shows which product the AI is currently pitching and its schedule window
+// — the currently-running batch, or the next one about to dispatch.
+function ActiveBatchCard() {
+  const [batch, setBatch] = useState<any>(null)
+  const [schedule, setSchedule] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    batchesApi.list({ batch_type: 'voice' }).then(async (res: any) => {
+      const batches: any[] = res || []
+      // Prefer a batch that's actively running; fall back to the most
+      // recently created "scheduled"/"draft" one so there's still
+      // something useful to show between runs.
+      const running = batches.find(b => b.status === 'running')
+      const upcoming = batches.find(b => b.status === 'scheduled')
+      const pick = running || upcoming || null
+      setBatch(pick ? { ...pick, _isRunning: !!running } : null)
+      if (pick) {
+        try {
+          const scheds: any[] = await schedulesApi.list({ batch_id: pick.id })
+          setSchedule(scheds?.[0] || null)
+        } catch {}
+      }
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }, [])
+
+  return (
+    <SCard title="Active Campaign">
+      {loading ? (
+        <div className={styles.activeBatchEmpty}>—</div>
+      ) : !batch ? (
+        <div className={styles.activeBatchEmpty}>No campaign running right now</div>
+      ) : (
+        <div>
+          <div className={styles.activeBatchName}>
+            {batch._isRunning ? '🟢 ' : '🕐 '}{batch.name}
+            <span style={{ marginLeft: 8 }}>
+              {batch.agent_type === 'human' ? '🧑‍💼 Human' : '🤖 AI'}
+            </span>
+          </div>
+          <div className={styles.activeBatchProduct}>
+            {batch.product_focus ? `Pitching: ${batch.product_focus}` : 'No specific product set'}
+          </div>
+          <div className={styles.activeBatchScheduleRow}>
+            <span className={styles.activeBatchScheduleLabel}>Status</span>
+            <span className={styles.activeBatchScheduleValue}>{batch.leads_processed || 0} / {batch.lead_count || 0} leads dialed</span>
+          </div>
+          {schedule && (
+            <>
+              <div className={styles.activeBatchScheduleRow}>
+                <span className={styles.activeBatchScheduleLabel}>Starts</span>
+                <span className={styles.activeBatchScheduleValue}>
+                  {new Date(schedule.start_datetime).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              <div className={styles.activeBatchScheduleRow}>
+                <span className={styles.activeBatchScheduleLabel}>Window</span>
+                <span className={styles.activeBatchScheduleValue}>{schedule.window_start_time}–{schedule.window_end_time} ({schedule.base_timezone})</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </SCard>
   )
 }
 
 export default function DashboardPage() {
-  const { license } = useAuthStore()
+  const { balance } = useAuthStore()
   const [ls, setLs] = useState<any>(null)
   const [cs, setCs] = useState<any>(null)
   const [calls, setCalls] = useState<any[]>([])
@@ -100,7 +214,8 @@ export default function DashboardPage() {
 
       {/* Stats grid */}
       <div className={styles.statsGrid}>
-        <LicenseCard license={license} />
+        <MinutesCard balance={balance} />
+        <LiveCallCard />
         <StatCard label="Total Leads"    value={ls?.total || 0}      color="#a594ff" loading={loading} />
         <StatCard label="Total Calls"    value={cs?.total || 0}      color="#3ecf8e" loading={loading} />
       </div>
@@ -137,6 +252,8 @@ export default function DashboardPage() {
             <Row label="Avg Duration" value={loading ? '—' : `${cs?.avg_duration_seconds || 0}s`} />
           </div>
         </SCard>
+
+        <ActiveBatchCard />
       </div>
 
       {/* Recent calls */}

@@ -1,7 +1,10 @@
 'use client'
-import { useEffect } from 'react'
-import { useRouter, usePathname } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { onIdTokenChanged } from 'firebase/auth'
+import { auth } from '@/lib/firebase'
 import { useAuthStore } from '@/store'
+import { apiClient } from '@/lib/api'
 import { useLiveCallStore } from '@/store/liveCallStore'
 import Sidebar from '@/components/layout/Sidebar'
 import AnimatedBackground from '@/components/shared/AnimatedBackground'
@@ -9,24 +12,133 @@ import styles from './app-layout.module.css'
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   const router  = useRouter()
-  const pathname = usePathname()
-  const { token, user, company, license, fetchCompany, fetchLicense } = useAuthStore()
+  const { token, user, company, balance, hasHydrated, backendSessionToken, fetchCompany, fetchBalance } = useAuthStore()
+  const [authBootstrapping, setAuthBootstrapping] = useState(true)
   const connectLiveCalls = useLiveCallStore(s => s.connect)
 
   useEffect(() => {
-    if (!token || !user) { router.replace('/login'); return }
-    // `company` (and therefore company_id) is deliberately NOT persisted
-    // to localStorage — only `user`/`token` are (see store/index.ts
-    // partialize). It was previously only ever fetched right after
-    // loginWithEmail(), so on any page reload or direct navigation to an
-    // app route, `company` stayed null for the rest of the session. Pages
-    // that key off companyId (e.g. the Live Call tab's WebSocket connect
-    // effect) silently no-op forever in that case — the Live tab looked
-    // stuck on "Connecting…" with no visible error. Fetch it here too,
-    // same as license, so it's always populated after a fresh page load.
-    if (!company) fetchCompany()
-    if (!license) fetchLicense()
-  }, [token, user])
+    // IMPORTANT: keep exactly one auth bootstrap listener in the protected
+    // layout. The store used to install a second module-level
+    // onIdTokenChanged listener, which raced this one and could leave the
+    // UI in its loading state even though /auth/me had already returned 200.
+    let cancelled = false
+    let timeoutId: ReturnType<typeof setTimeout> | null = null
+    let unsubscribe: (() => void) | null = null
+
+    const finish = () => {
+      if (!cancelled) setAuthBootstrapping(false)
+    }
+
+    const redirectToLogin = () => {
+      if (cancelled) return
+      apiClient.setToken(null)
+      useAuthStore.setState({ token: null, user: null, company: null, balance: null, backendSessionToken: null })
+      finish()
+      router.replace('/login')
+    }
+
+    const bootstrapFirebaseSession = async (firebaseUser: typeof auth.currentUser) => {
+      if (cancelled || !firebaseUser) return
+
+      try {
+        const fresh = await firebaseUser.getIdToken()
+        if (cancelled) return
+
+        // Login/register already exchanged this exact Firebase token for the
+        // backend session. Don't immediately repeat GET /auth/me when the
+        // Firebase listener fires as a consequence of that login. On a full
+        // page load backendSessionToken is null (it is intentionally not
+        // persisted), so the first restored session is still validated.
+        const state = useAuthStore.getState()
+        if (state.backendSessionToken === fresh && state.user && state.token === fresh) {
+          apiClient.setToken(fresh)
+          void state.fetchCompany()
+          void state.fetchBalance()
+          console.debug('[auth] Session already adopted; skipping duplicate /auth/me')
+          finish()
+          return
+        }
+
+        console.debug('[auth] Firebase user restored; rebuilding backend session')
+        apiClient.setToken(fresh)
+        const me: any = await apiClient.get('/auth/me')
+        if (cancelled) return
+
+        useAuthStore.setState({
+          user: {
+            uid: me.id,
+            email: me.email,
+            full_name: me.full_name,
+            email_verified: !!me.email_verified,
+          },
+          token: fresh,
+          backendSessionToken: fresh,
+          isLoading: false,
+        })
+
+        // These are useful data, but NEVER prerequisites for rendering the
+        // authenticated shell.
+        void useAuthStore.getState().fetchCompany()
+        void useAuthStore.getState().fetchBalance()
+
+        console.debug('[auth] Session ready; rendering protected app')
+        finish()
+      } catch (err) {
+        console.error('[auth] Session bootstrap failed:', err)
+        // If we already have a persisted authenticated snapshot, keep the
+        // app usable while the backend/Firebase session recovers. Otherwise
+        // the timeout below will send the user to login.
+        const state = useAuthStore.getState()
+        if (state.token && state.user) finish()
+      }
+    }
+
+    // Subscribe immediately. Do NOT wait for Zustand hydration here: Firebase
+    // has its own asynchronous persistence and this listener is the reliable
+    // signal that Firebase has finished restoring the auth session.
+    unsubscribe = onIdTokenChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        void bootstrapFirebaseSession(firebaseUser)
+        return
+      }
+
+      // The initial Firebase null event can occur before Zustand hydration.
+      // Do not redirect until hydration has completed.
+      const state = useAuthStore.getState()
+      if (state.hasHydrated) {
+        const persistedSession = !!state.token && !!state.user
+        if (!persistedSession) redirectToLogin()
+      }
+    })
+
+    // Safety net: never leave the UI on "Loading your account…" forever.
+    timeoutId = setTimeout(() => {
+      if (cancelled) return
+      const state = useAuthStore.getState()
+      if (auth.currentUser || (state.hasHydrated && state.token && state.user)) {
+        console.warn('[auth] Bootstrap timeout reached but a session exists; rendering app')
+        finish()
+      } else {
+        console.warn('[auth] No Firebase session after 8 seconds; redirecting to login')
+        redirectToLogin()
+      }
+    }, 8000)
+
+    return () => {
+      cancelled = true
+      unsubscribe?.()
+      if (timeoutId) clearTimeout(timeoutId)
+    }
+  }, [router])
+
+  // Company and balance are not authentication prerequisites. Load them
+  // independently so a slow/stuck balance/company request can never keep the
+  // entire application behind the authentication loading screen.
+  useEffect(() => {
+    if (!token || !user) return
+    if (!company) void fetchCompany()
+    if (!balance) void fetchBalance()
+  }, [hasHydrated, token, user, company, balance, fetchCompany, fetchBalance])
 
   // Connect the Live Call WebSocket here — at the layout level, which
   // stays mounted for the whole app session — instead of inside
@@ -41,28 +153,51 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [(company as any)?.id])
 
   // No hard redirect here on purpose. Leads/Batches/Schedules etc. stay
-  // browsable even without a valid license — viewing/managing your own
-  // data costs nothing and shouldn't break because of a license-server
-  // hiccup. The thing that actually needs gating (sending calls) is
-  // enforced server-side in app/tasks/tasks.py's is_call_allowed(), which
-  // runs regardless of what this page shows. The banner below is just a
-  // visible nudge to renew, not a wall.
+  // browsable even without minutes on the plan — viewing/managing your
+  // own data costs nothing and shouldn't break because of it. The thing
+  // that actually needs gating (sending calls) is enforced server-side in
+  // app/tasks/tasks.py (plan_service.has_minutes_available()), which runs
+  // regardless of what this page shows. The banner below is just a
+  // visible nudge to buy/renew a plan, not a wall.
 
-  if (!token || !user) return null
+  // Never render a completely empty page while auth is being restored.
+  // A black/empty page here is especially confusing after Cashfree returns
+  // because the browser has just crossed an external navigation boundary.
+  if (authBootstrapping || !token || !user) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        display: 'grid',
+        placeItems: 'center',
+        background: '#050505',
+        color: '#c8cad8',
+        fontFamily: 'Inter, system-ui, sans-serif',
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 28, marginBottom: 12 }}>◌</div>
+          <div>Loading your account…</div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className={styles.shell}>
       <AnimatedBackground variant="subtle" />
       <Sidebar />
       <main className={styles.main}>
-        {/* License expired / not activated banner */}
-        {license && !license.valid && (
+        {/* Plan expired / out of minutes banner */}
+        {balance && !balance.can_place_calls && (
           <div className={styles.licenseBanner}>
             <div className={styles.licenseBannerText}>
-              ⚠ {license.activated ? 'Your license has expired.' : 'No license activated.'} Outbound calls and campaigns are paused until you activate/renew.
+              ⚠ {balance.plan_type === 'none'
+                ? 'No plan purchased yet.'
+                : balance.is_expired
+                  ? 'Your plan has expired.'
+                  : 'You\'re out of minutes.'} Outbound calls and campaigns are paused until you {balance.plan_type === 'none' ? 'buy a plan' : 'renew'}.
             </div>
             <button onClick={() => router.push('/pricing')} className={styles.activateBtn}>
-              Activate License
+              {balance.plan_type === 'none' ? 'Buy a Plan' : 'Renew Plan'}
             </button>
           </div>
         )}

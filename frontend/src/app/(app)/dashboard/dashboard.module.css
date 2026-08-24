@@ -7,18 +7,45 @@
 .statsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
 .midGrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 20px; }
 
-.licenseCard {
+/* Minutes-remaining card (small) — replaces the old span-4 license card */
+.minutesCard {
   background: var(--card);
   border-radius: var(--radius-md);
-  padding: 16px 18px;
-  grid-column: span 4;
+  padding: 14px 16px;
+  text-decoration: none;
 }
-.licenseCardInactive { border: 1px solid rgba(242,87,87,0.2); }
-.licenseCardActive { border: 1px solid var(--border); }
-.licenseRow { display: flex; align-items: center; justify-content: space-between; }
-.licenseLabel { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 2px; }
-.licenseSub { font-size: 12px; }
-.licenseStatus { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; text-align: right; }
+.minutesCardLow { border: 1px solid rgba(242,87,87,0.25); }
+.minutesCardOk { border: 1px solid var(--border); }
+.minutesLabel { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; }
+.minutesValue { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: -0.02em; }
+.minutesValue small { font-size: 11px; font-weight: 500; color: var(--text3); }
+.minutesSub { font-size: 11px; color: var(--text3); margin-top: 3px; }
+.minutesSubWarn { font-size: 11px; color: #f25757; margin-top: 3px; }
+
+/* Live call tracking card (small, "third smaller card") */
+.liveCallCard {
+  background: var(--card);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  text-decoration: none;
+}
+.liveCallCardActive { border: 1px solid rgba(62,207,142,0.3); }
+.liveCallLabel { font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.liveDot { width: 7px; height: 7px; border-radius: 50%; background: #3ecf8e; display: inline-block; animation: pulseDot 1.4s infinite; }
+@keyframes pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.liveCallPhone { font-size: 15px; font-weight: 700; color: var(--text); font-family: monospace; }
+.liveCallMeta { font-size: 11px; color: var(--text3); margin-top: 3px; }
+.liveCallEmpty { font-size: 13px; color: var(--text3); padding: 4px 0; }
+
+/* Active batch / campaign card (large, "third large card") */
+.activeBatchEmpty { text-align: center; color: var(--text3); font-size: 13px; padding: 24px 0; }
+.activeBatchName { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+.activeBatchProduct { font-size: 12px; color: var(--text2); margin-bottom: 10px; }
+.activeBatchScheduleRow { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.04); font-size: 12px; }
+.activeBatchScheduleLabel { color: var(--text3); }
+.activeBatchScheduleValue { color: var(--text2); font-weight: 500; }
+.activeBatchProgress { margin-top: 10px; }
 
 .sCard {
   background: linear-gradient(145deg, #1a1a1c 0%, #202024 45%, #2c2c30 100%);

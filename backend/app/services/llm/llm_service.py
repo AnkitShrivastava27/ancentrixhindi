@@ -3,6 +3,7 @@ LLM Service — Groq llama-3.3-70b-versatile
 """
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -204,6 +205,7 @@ class LLMService:
         system_prompt: str,
         max_tokens: int = 100,
         temperature: float = 0.9,
+        response_format: Optional[Dict] = None,
     ) -> str:
         clean = [m for m in messages if m.get("content", "").strip()]
         if len(clean) > 10:
@@ -217,6 +219,8 @@ class LLMService:
             "temperature": temperature,
             "stream": False,
         }
+        if response_format:
+            payload["response_format"] = response_format
 
         try:
             client = await self._get_client()
@@ -260,11 +264,11 @@ class LLMService:
             result = await self.generate_response(
                 messages=[{"role": "user", "content": prompt}],
                 system_prompt="You are a JSON-only intent classifier. Return only valid JSON.",
-                max_tokens=200,
+                max_tokens=240,
                 temperature=0.1,
+                response_format={"type": "json_object"},
             )
-            clean = result.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            return json.loads(clean)
+            return self._parse_json_object(result)
         except Exception as e:
             logger.debug(f"Callback detection error: {e}")
             return {
@@ -275,30 +279,189 @@ class LLMService:
                 "confidence": 0.0,
             }
 
-    async def analyze_call(self, transcript: str, company_context: str) -> Dict:
-        prompt = ANALYSIS_PROMPT.format(
-            transcript=transcript,
-            company_context=company_context,
-        )
-        result = await self.generate_response(
-            messages=[{"role": "user", "content": prompt}],
-            system_prompt="You are a JSON-only analysis assistant. Return only valid JSON.",
-            max_tokens=600,
-            temperature=0.1,
-        )
+    @staticmethod
+    def _parse_json_object(raw: str) -> Dict:
+        """Parse a JSON object even if a provider still wraps it in markdown/text."""
+        text = (raw or "").strip()
+        if not text:
+            raise ValueError("Empty LLM JSON response")
+        # Remove common markdown fences without relying on chained lstrip(),
+        # which removes individual characters rather than the fence token.
+        text = re.sub(r"^```(?:json)?\\s*", "", text, flags=re.I)
+        text = re.sub(r"\\s*```$", "", text)
         try:
-            clean = result.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-            return json.loads(clean)
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            start, end = text.find("{"), text.rfind("}")
+            if start < 0 or end <= start:
+                raise
+            value = json.loads(text[start:end + 1])
+        if not isinstance(value, dict):
+            raise ValueError("LLM JSON response is not an object")
+        return value
+
+    def _deterministic_call_analysis(self, transcript: str) -> Dict:
+        """Create a useful transcript-grounded result without another LLM call.
+
+        This is the safety net for post-call analysis. It must never return the
+        old generic "conversation was recorded" message when caller speech is
+        available.
+        """
+        import re
+
+        text = (transcript or "").strip()
+        low = text.casefold()
+
+        caller_lines = []
+        for line in text.splitlines():
+            m = re.match(r"\s*Caller\s*:\s*(.+)", line, flags=re.I)
+            if m and m.group(1).strip():
+                caller_lines.append(re.sub(r"\s+", " ", m.group(1).strip()))
+
+        # If the transcript did not use Caller:/Agent: labels, use non-empty
+        # lines as evidence rather than pretending that no conversation exists.
+        if not caller_lines:
+            raw_lines = [re.sub(r"\s+", " ", x.strip()) for x in text.splitlines() if x.strip()]
+            caller_lines = [x for x in raw_lines if not re.match(r"^(Agent|Assistant)\s*:", x, re.I)]
+
+        caller_text = " ".join(caller_lines)
+        evidence = " ".join(caller_lines[-3:]).strip()
+        if len(evidence) > 260:
+            evidence = evidence[:257].rsplit(" ", 1)[0] + "..."
+
+        site_visit = any(x in low for x in (
+            "site visit", "site-visit", "site pe", "site par", "site mein",
+            "site me", "site dekh", "site jaana", "site jana", "site ja",
+            "property dekh", "property visit", "property dekhna", "ghar dekh",
+            "visit kar", "visit chahi", "visit ke liye", "visit karna",
+            "visit karenge", "visit pe", "visit par", "property dekhne",
+        ))
+        meeting = any(x in low for x in (
+            "meeting", "milna hai", "milne", "office aana", "office meeting",
+        ))
+        callback = any(x in low for x in (
+            "callback", "call back", "baad mein call", "baad me call",
+            "phir call", "call kar lena", "dobara call",
+        ))
+        human_followup = any(x in low for x in (
+            "human", "human call", "human se baat", "human se connect",
+            "insaan", "insaan se baat", "kisi insaan", "aadmi se baat",
+            "agent se baat", "real agent", "specialist", "manager se baat",
+            "representative", "person se baat", "kisi se baat",
+            "team se baat", "team se connect",
+        ))
+        not_interested = any(x in low for x in (
+            "not interested", "no interest", "nahi chahiye", "nahi interested",
+            "interest nahi", "interested nahi",
+        ))
+        interested = any(x in low for x in (
+            "interested", "interest hai", "acha laga", "pasand", "details bhej",
+            "details send", "price bata", "price bataye", "information bhej",
+        ))
+
+        if not_interested:
+            status, intent, level = "cold", "not_interested", 0.15
+        elif site_visit:
+            status, intent, level = "hot", "site_visit", 0.85
+        elif meeting:
+            status, intent, level = "warm", "meeting", 0.75
+        elif human_followup:
+            status, intent, level = "warm", "human_followup", 0.70
+        elif callback:
+            status, intent, level = "warm", "wants_callback", 0.65
+        elif interested:
+            status, intent, level = "interested", "interested", 0.60
+        else:
+            status, intent, level = "contacted", "other", 0.30
+
+        # Make the fallback short, factual and based on what the caller said.
+        if site_visit:
+            summary = "Customer requested a site visit. Admin needs to confirm the visit manually."
+            next_action = "Admin to confirm site visit manually."
+        elif meeting:
+            summary = "Customer requested a meeting. Admin needs to confirm it manually."
+            next_action = "Admin to confirm meeting manually."
+        elif human_followup:
+            summary = "Customer requested to speak with a human representative. Admin should arrange human follow-up."
+            next_action = "Admin to arrange human follow-up."
+        elif callback:
+            summary = "Customer requested a callback. Admin should follow up as requested."
+            next_action = "Admin to arrange callback."
+        elif not_interested:
+            summary = "Customer said they are not interested."
+            next_action = ""
+        elif evidence:
+            summary = f"Customer discussed the requirement and said: {evidence}"
+            next_action = ""
+        else:
+            summary = "Call completed with no clear customer requirement captured."
+            next_action = ""
+
+        note = (
+            "Customer requested a site visit; admin to confirm manually."
+            if site_visit else
+            "Customer requested a meeting; admin to confirm manually."
+            if meeting else
+            "Customer requested a callback; admin to follow up."
+            if callback else
+            "Customer requested a human representative; admin to follow up."
+            if human_followup else
+            "Customer is not interested."
+            if not_interested else
+            evidence[:210] if evidence else
+            "No clear customer requirement captured."
+        )
+        return {
+            "summary": summary,
+            "sentiment": "negative" if not_interested else ("positive" if (site_visit or meeting or interested) else "neutral"),
+            "intent": intent,
+            "lead_status": status,
+            "interest_level": level,
+            "key_info": {"next_action": next_action} if next_action else {},
+            "follow_up_required": bool(site_visit or meeting or callback),
+            "follow_up_note": next_action,
+            "note": note[:220],
+        }
+
+    async def analyze_call(self, transcript: str, company_context: str, lead_context: str = "") -> Dict:
+        """Analyze the real call transcript once; never retry a failed analysis."""
+        transcript = (transcript or "").strip()
+        if not transcript:
+            return self._deterministic_call_analysis(transcript)
+
+        compact_transcript = transcript[-12000:]
+        prompt = f"""Analyze this completed sales/support call using ONLY the transcript.
+Company/product context: {company_context[:500]}
+Lead before call: {lead_context[:900]}
+Transcript:
+{compact_transcript}
+
+Return one valid JSON object with:
+summary (1-2 short factual sentences), sentiment (positive|neutral|negative),
+intent (interested|not_interested|wants_callback|site_visit|meeting|demo|human_followup|objection|complaint|query_resolved|other),
+lead_status (new|contacted|interested|warm|hot|cold|closed_won|closed_lost|do_not_call),
+interest_level (0..1),
+key_info (only facts explicitly stated: budget,timeline,location,product,property_type,pain_points,objections,next_action),
+follow_up_required (boolean), follow_up_note (short),
+note (ONE concise current lead note, maximum 220 characters).
+Never invent facts. If the caller requested a site visit/meeting/callback, reflect that explicitly.
+The note is CURRENT STATE ONLY. Do not include timestamps, transcript, old notes, call history,
+or generic phrases like "call completed"."""
+        try:
+            result = await self.generate_response(
+                messages=[{"role": "user", "content": prompt}],
+                system_prompt="Return exactly one valid JSON object. No markdown. Use only facts from the transcript/context.",
+                max_tokens=700,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            parsed = self._parse_json_object(result)
+            if not isinstance(parsed, dict) or not str(parsed.get("summary") or "").strip():
+                raise ValueError("Call analysis returned no usable summary")
+            return parsed
         except Exception as e:
-            logger.error(f"Call analysis parse error: {e}")
-            return {
-                "summary": "Call completed", "sentiment": "neutral",
-                "intent": "other", "lead_status": "contacted",
-                "interest_level": 0.3, "callback_requested": False,
-                "callback_time_raw": None, "key_info": {},
-                "transferred_to_human": False, "follow_up_required": False,
-                "follow_up_note": "",
-            }
+            logger.warning(f"Call analysis unavailable; using transcript-grounded fallback: {e}")
+            return self._deterministic_call_analysis(transcript)
 
     async def analyze_email_reply(
         self, original_email: str, reply_body: str,

@@ -101,8 +101,9 @@ export default function SchedulesPage() {
                     {!s.is_active && <span className={styles.pausedPill}>paused</span>}
                   </div>
                   <div className={styles.batchDates}>
-                    {new Date(s.start_datetime).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}
-                    {s.end_datetime && ` → ${new Date(s.end_datetime).toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}`}
+                    {/* Exact date AND time (was date-only before) */}
+                    {new Date(s.start_datetime).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}
+                    {s.end_datetime && ` → ${new Date(s.end_datetime).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}`}
                   </div>
                 </div>
                 {/* Window */}
@@ -143,7 +144,13 @@ export default function SchedulesPage() {
               <label className={styles.label}>Batch *</label>
               <select value={form.batch_id} onChange={e => set('batch_id', e.target.value)} disabled={!!editing} className={`${styles.fieldInput} ${editing ? styles.fieldInputDisabled : ''}`}>
                 <option value="">Select a batch…</option>
-                {batches.filter(b => !['completed','failed'].includes(b.status)).map(b => (
+                {/* agent_type==='human' batches excluded — schedules only
+                    ever dispatch AI batches (see the agent_type check in
+                    app/tasks/tasks.py's schedule dispatch loop); a human
+                    batch showing up here as selectable was misleading —
+                    creating a schedule for one would just silently never
+                    fire. */}
+                {batches.filter(b => !['completed','failed'].includes(b.status) && b.agent_type !== 'human').map(b => (
                   <option key={b.id} value={b.id}>{b.batch_type==='voice'?'📞':'✉️'} {b.name} ({b.lead_count} leads · {b.status})</option>
                 ))}
               </select>

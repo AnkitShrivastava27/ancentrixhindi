@@ -42,6 +42,21 @@ export default function BatchesPage() {
     catch { toast.error('Delete failed') }
   }
 
+  const [reusing, setReusing] = useState<string | null>(null)
+  const reuseBatch = async (id: string) => {
+    setReusing(id)
+    try {
+      const created: any = await batchesApi.reuse(id)
+      toast.success(`Created "${created.name}" with ${created.lead_count} leads`)
+      await load()
+      setTab('list')
+    } catch (e: any) {
+      toast.error(e.message || 'Could not reuse this batch')
+    } finally {
+      setReusing(null)
+    }
+  }
+
   const visible = filter === 'all' ? batches : batches.filter(b => b.status === filter)
   const counts: Record<string, number> = { all: batches.length }
   batches.forEach(b => { counts[b.status] = (counts[b.status] || 0) + 1 })
@@ -94,6 +109,9 @@ export default function BatchesPage() {
                     <div className={styles.nameTop}>
                       <span className={styles.typeIcon}>📞</span>
                       <span className={styles.flagIcon} title="Vobiz (India)">{'🇮🇳'}</span>
+                      <span className={styles.agentBadge} title={b.agent_type === 'human' ? 'Human (manual)' : 'AI Agent'}>
+                        {b.agent_type === 'human' ? '🧑‍💼 Human' : '🤖 AI'}
+                      </span>
                       <span className={styles.batchName}>{b.name}</span>
                     </div>
                     {b.campaign_name && <div className={styles.campaignName}>{b.campaign_name}</div>}
@@ -103,6 +121,11 @@ export default function BatchesPage() {
                   <div><StatusBadge status={b.status} /></div>
                   <Bar done={b.leads_processed} total={b.lead_count} color={col} />
                   <div className={styles.deleteAction} onClick={e => e.stopPropagation()}>
+                    {b.status === 'completed' && (
+                      <button onClick={() => reuseBatch(b.id)} disabled={reusing === b.id} className={styles.reuseBtn} title="Create a fresh batch with the same settings">
+                        {reusing === b.id ? '…' : '↻ Reuse'}
+                      </button>
+                    )}
                     <button onClick={() => deleteBatch(b.id)} className={styles.iconDeleteBtn}>✕</button>
                   </div>
                 </div>
@@ -119,22 +142,23 @@ export default function BatchesPage() {
 
       {/* Detail panel */}
       {detail && (
-        <BatchDetail batch={detail} onClose={() => setDetail(null)} onDelete={() => deleteBatch(detail.id)} onRefresh={load} />
+        <BatchDetail batch={detail} onClose={() => setDetail(null)} onDelete={() => deleteBatch(detail.id)} onReuse={() => reuseBatch(detail.id)} reusing={reusing === detail.id} onRefresh={load} />
       )}
     </div>
   )
 }
 
 function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
-  const { license } = useAuthStore()
+  const { balance } = useAuthStore()
   const [step, setStep] = useState<1|2|3>(1)
   const [saving, setSaving] = useState(false)
   const [preview, setPreview] = useState<any>(null)
   const [previewing, setPreviewing] = useState(false)
   const [f, setF] = useState({
     name: '', campaign_name: '', product_focus: '',
-    batch_type: 'voice' as 'voice', call_mode: 'sales' as 'sales'|'support',
+    batch_type: 'voice' as 'voice', call_mode: 'sales' as 'sales',
     provider: 'vobiz' as 'vobiz',
+    agent_type: 'ai' as 'ai'|'human',
     statuses: [] as string[], country_code: '' as ''|'+91'|'other', limit: '', exclude_done: true,
     withSchedule: false,
     start_datetime: '', end_datetime: '',
@@ -159,6 +183,7 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
     try {
       const b: any = await batchesApi.create({
         name: f.name, batch_type: f.batch_type, call_mode: f.call_mode, provider: f.provider,
+        agent_type: f.agent_type,
         campaign_name: f.campaign_name || undefined, product_focus: f.product_focus || undefined,
         filter_criteria: { status: f.statuses.length ? f.statuses : undefined, country_code: f.country_code || undefined, limit: f.limit ? Number(f.limit) : undefined, exclude_statuses: f.exclude_done ? ['closed_won','closed_lost','do_not_call'] : undefined },
       })
@@ -174,9 +199,9 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
     <div className={styles.createGrid}>
       {/* Form card */}
       <div className={styles.formCard}>
-        {license && !license.valid && (
+        {balance && !balance.can_place_calls && (
           <div className={styles.licenseWarn}>
-            ⚠ No active license — you can build this batch, but outbound calls won't dispatch until you activate/renew.
+            ⚠ {balance.plan_type === 'none' ? 'No plan purchased' : balance.is_expired ? 'Plan expired' : 'Out of minutes'} — you can build this batch, but outbound calls won't dispatch until you buy/renew a plan.
           </div>
         )}
         {/* Step nav */}
@@ -199,13 +224,22 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
               <Input label="Campaign" value={f.campaign_name} onChange={e => set('campaign_name', e.target.value)} />
               <Input label="Product Focus" value={f.product_focus} onChange={e => set('product_focus', e.target.value)} />
             </div>
+            {/* Call Mode toggle removed — Support mode dropped, every
+                batch is Sales now. f.call_mode still defaults to
+                'sales' in the form state and gets sent as-is. */}
             <div>
-              <label className={styles.label}>Call Mode</label>
+              <label className={styles.label}>Who dials these leads?</label>
               <div className={styles.modeRow}>
-                {[{ v: 'sales', l: '💰 Sales' }, { v: 'support', l: '🎧 Support' }].map(m => (
-                  <button key={m.v} onClick={() => set('call_mode', m.v)} className={`${styles.modeBtn} ${f.call_mode === m.v ? styles.modeBtnActive : ''}`}>{m.l}</button>
+                {[{ v: 'ai', l: '🤖 AI Agent' }, { v: 'human', l: '🧑‍💼 Human (manual)' }].map(m => (
+                  <button key={m.v} onClick={() => set('agent_type', m.v)} className={`${styles.modeBtn} ${f.agent_type === m.v ? styles.modeBtnActive : ''}`}>{m.l}</button>
                 ))}
               </div>
+              {f.agent_type === 'human' && (
+                <p className={styles.hintText}>
+                  Leads land in the <strong>Human Call</strong> tab instead of being auto-dialed — you'll call
+                  each one yourself from there using your Vobiz number.
+                </p>
+              )}
             </div>
             {/* Provider picker removed — Vobiz is the sole telephony provider now */}
             <label className={styles.checkboxRow}>
@@ -324,7 +358,7 @@ function CreateBatchForm({ onDone, onCancel }: { onDone: () => void; onCancel: (
   )
 }
 
-function BatchDetail({ batch, onClose, onDelete, onRefresh }: any) {
+function BatchDetail({ batch, onClose, onDelete, onReuse, reusing, onRefresh }: any) {
   const [showSched, setShowSched] = useState(false)
   const [sf, setSf] = useState({ start_datetime:'', end_datetime:'', window_start:'09:00', window_end:'18:00', base_timezone:'Asia/Kolkata', use_lead_timezone:true, allowed_days:['Monday','Tuesday','Wednesday','Thursday','Friday'] as string[], max_per_hour:'20', delay_s:'30' })
   const [saving, setSaving] = useState(false)
@@ -422,6 +456,9 @@ function BatchDetail({ batch, onClose, onDelete, onRefresh }: any) {
         {/* Footer */}
         <div className={styles.modalFooter}>
           <Button variant="danger" onClick={onDelete}>Delete Batch</Button>
+          {batch.status === 'completed' && (
+            <Button variant="secondary" onClick={onReuse} loading={reusing}>↻ Reuse Batch</Button>
+          )}
           <Button onClick={onClose}>Close</Button>
         </div>
       </div>

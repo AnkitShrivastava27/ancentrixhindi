@@ -1,0 +1,48 @@
+.page { max-width: 1100px; }
+.head { margin-bottom: 20px; }
+.headTitle { font-size: 20px; font-weight: 600; color: var(--text); margin: 0; letter-spacing: -0.02em; }
+.headSub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+.loadingWrap { display: flex; justify-content: center; padding-top: 60px; }
+
+.callBanner {
+  display: flex; align-items: center; justify-content: space-between;
+  background: rgba(62,207,142,0.08); border: 1px solid rgba(62,207,142,0.25);
+  border-radius: var(--radius-md); padding: 12px 18px; margin-bottom: 16px;
+}
+.callBannerLeft { display: flex; align-items: center; gap: 10px; }
+.callBannerDot { width: 8px; height: 8px; border-radius: 50%; background: #3ecf8e; animation: pulseDot 1.2s infinite; }
+@keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.callBannerText { font-size: 13px; color: var(--text); font-weight: 600; }
+.callBannerTimer { font-size: 13px; color: var(--text2); font-family: monospace; }
+
+.table { width: 100%; border-collapse: collapse; }
+.th { text-align: left; font-size: 11px; font-weight: 600; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.tr td, .trLast td { padding: 11px 12px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.trLast td { border-bottom: none; }
+.tdName { color: var(--text); font-weight: 500; }
+.tdPhone { font-family: monospace; color: var(--text2); }
+.tdBatch { color: var(--text3); font-size: 12px; }
+.tdDialed { color: #3ecf8e; font-size: 12px; }
+.dialedCell { display: flex; align-items: center; gap: 8px; }
+.recallBtn { padding: 4px 10px; border-radius: 6px; background: var(--accent-soft); border: 1px solid rgba(200,202,210,0.3); color: #d9dbe1; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.recallBtn:hover { opacity: 0.85; }
+.recallBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.dialBtn {
+  padding: 6px 14px; border-radius: 7px; border: none; cursor: pointer;
+  font-size: 12px; font-weight: 600; background: var(--accent); color: #0b0c10;
+}
+.dialBtn:hover { opacity: 0.9; }
+.dialBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.phonePromptRow { display: flex; gap: 8px; margin-bottom: 16px; }
+.phoneInput {
+  flex: 1; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+}
+.phoneInput:focus { outline: none; border-color: var(--accent); }
+.saveNumHint { font-size: 11px; color: var(--text3); margin-top: 4px; }
+
+.formLabel { font-size: 12px; font-weight: 600; color: var(--text2); margin-bottom: 6px; display: block; }
+.formGroup { margin-bottom: 14px; }

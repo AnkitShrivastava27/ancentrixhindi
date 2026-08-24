@@ -40,25 +40,13 @@ async def _warm_static_tts_background():
         logger.warning(f"Static TTS warmup failed (non-fatal): {e}")
 
 
-async def _refresh_licenses_background():
-    """Re-validate every activated company's license against the license
-    table. Also non-fatal and backgrounded for the same reason as TTS
-    warmup — this loops over every company and shouldn't hold up
-    startup. The recurring 24h re-check already lives in Celery beat
-    (see app/core/celery_app.py); this is just the one-time check on
-    boot so status isn't stale immediately after a deploy."""
-    try:
-        from app.core.database import AsyncSessionLocal
-        from app.models.models import Company
-        from app.services import license_service
-        from sqlalchemy import select
-        async with AsyncSessionLocal() as db:
-            r = await db.execute(select(Company).where(Company.license_key.isnot(None)))
-            for company in r.scalars().all():
-                await license_service.refresh_status(company)
-        logger.info("License status refreshed for all activated companies")
-    except Exception as e:
-        logger.warning(f"License startup check failed (non-fatal): {e}")
+# NOTE: _refresh_licenses_background() removed — the yearly license/
+# activation-key system (Company.license_*, app/services/license_service.py,
+# app/api/routes/license.py) has been replaced by the Cashfree minute-based
+# plan system (app/services/plan_service.py, app/api/routes/payments.py).
+# There's nothing to background-refresh for plans — balance is computed
+# on read from Company.plan_minutes_used / plan_minutes_total, not
+# revalidated against an external server.
 
 
 @asynccontextmanager
@@ -78,20 +66,18 @@ async def lifespan(app: FastAPI):
     # before starting the app, not here. create_tables() is now a no-op
     # against Postgres/Neon and only still creates tables for local
     # SQLite dev — see app/core/database.py.
+    print("=== DEBUG === DATABASE_URL:", settings.DATABASE_URL)
+    print("=== DEBUG === AUTO_CREATE_TABLES_SQLITE_ONLY:", settings.AUTO_CREATE_TABLES_SQLITE_ONLY)
+    from app.core.database import Base
+    print("=== DEBUG === tables registered:", list(Base.metadata.tables.keys()))
     await create_tables()
 
-    # ALLOWED_USERS is an optional bootstrap for a fixed admin/test
-    # account only — see app/api/routes/auth.py's docstring. Real
-    # customers self-serve via POST /api/v1/auth/register with a license
-    # key generated in the admin panel; nothing about that flow needs
-    # ALLOWED_USERS, .env changes, or a rebuild/restart.
-    if settings.ALLOWED_USERS:
-        try:
-            from app.api.routes.auth import provision_allowed_users
-            n = await provision_allowed_users(settings.ALLOWED_USERS)
-            logger.info(f"Provisioned {n} allowed user(s) from ALLOWED_USERS (bootstrap accounts only)")
-        except Exception as e:
-            logger.error(f"Failed to provision ALLOWED_USERS (non-fatal): {e}")
+    # ALLOWED_USERS/provision_allowed_users() removed — Firebase Auth
+    # (Aug 2026) handles account creation client-side now; there's no
+    # local password bootstrap step to run at startup anymore. A new
+    # account is auto-provisioned in this DB the first time its Firebase
+    # ID token hits any authenticated endpoint — see
+    # app/core/security.py's _get_or_create_user().
 
     try:
         from app.services.llm.rag_service import rag_service
@@ -100,9 +86,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"RAG warmup failed (non-fatal): {e}")
 
-    # Fire-and-forget — do not await. See docstrings above for why.
+    # Fire-and-forget — do not await. See docstring above for why.
     asyncio.create_task(_warm_static_tts_background())
-    asyncio.create_task(_refresh_licenses_background())
 
     yield
 
@@ -144,13 +129,15 @@ async def admin_panel():
     return _FileResponse(_ADMIN_HTML_PATH)
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-from app.api.routes import auth, company, leads, telephony, batches, schedules, calls, knowledge, vobiz_webhook, live_ws
-from app.api.routes.license import router as license_router
+from app.api.routes import auth, company, leads, telephony, batches, schedules, calls, knowledge, appointments, vobiz_webhook, live_ws
+from app.api.routes.payments import router as payments_router
+from app.api.routes.human_calls import router as human_calls_router
 from app.api.routes.admin import router as admin_router
 from app.api.routes.vobiz_stream_webhook import router as vobiz_stream_router
 
 app.include_router(auth.router,             prefix="/api/v1/auth",      tags=["Auth"])
-app.include_router(license_router,          prefix="/api/v1",            tags=["License"])
+app.include_router(payments_router,         prefix="/api/v1",            tags=["Payments"])
+app.include_router(human_calls_router,      prefix="/api/v1",            tags=["Human Calls"])
 app.include_router(admin_router,            prefix="/api/v1",            tags=["Admin"])
 app.include_router(company.router,          prefix="/api/v1/company",   tags=["Company"])
 app.include_router(leads.router,            prefix="/api/v1/leads",     tags=["Leads"])
@@ -159,6 +146,7 @@ app.include_router(batches.router,          prefix="/api/v1/batches",   tags=["B
 app.include_router(schedules.router,        prefix="/api/v1/schedules", tags=["Schedules"])
 app.include_router(calls.router,            prefix="/api/v1/calls",     tags=["Calls"])
 app.include_router(knowledge.router,        prefix="/api/v1/knowledge", tags=["Knowledge"])
+app.include_router(appointments.router,     prefix="/api/v1/appointments", tags=["Appointments"])
 app.include_router(vobiz_webhook.router,    prefix="/api/v1/vobiz",     tags=["Vobiz"])
 app.include_router(vobiz_stream_router,     prefix="/api/v1/vobiz-stream", tags=["vobiz-stream"])
 app.include_router(live_ws.router,          prefix="/api/v1/live",      tags=["Live"])

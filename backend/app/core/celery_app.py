@@ -44,11 +44,6 @@ celery_app.conf.update(
             "schedule": 60.0,
             "options": {"queue": "default"},
         },
-        "revalidate-licenses": {
-            "task":    "app.tasks.license_tasks.revalidate_all_licenses",
-            "schedule": 24 * 3600.0,
-            "options": {"queue": "default"},
-        },
     },
 )
 

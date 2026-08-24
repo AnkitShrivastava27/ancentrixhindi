@@ -12,6 +12,7 @@ function timeAgo(s: string) {
 }
 
 export default function CallsPage() {
+  const [channel, setChannel] = useState('')   // '' = all, 'ai', 'human'
   const [dir, setDir]       = useState('')
   const [calls, setCalls]   = useState<any[]>([])
   const [total, setTotal]   = useState(0)
@@ -23,11 +24,11 @@ export default function CallsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const r: any = await callsApi.list({ direction:dir||undefined, limit:LIMIT, offset })
+      const r: any = await callsApi.list({ direction:dir||undefined, channel:channel||undefined, limit:LIMIT, offset })
       setCalls(r.calls||[]); setTotal(r.total||0)
     } catch { toast.error('Failed to load') }
     finally { setLoading(false) }
-  }, [dir, offset])
+  }, [dir, channel, offset])
   useEffect(() => { load() }, [load])
 
   const pages = Math.ceil(total / LIMIT)
@@ -38,6 +39,12 @@ export default function CallsPage() {
       <div className={styles.head}>
         <h1 className={styles.headTitle}>Call Logs</h1>
         <p className={styles.headSub}>{total} total calls</p>
+      </div>
+
+      {/* AI / Human tabs */}
+      <div className={styles.tabRow}>
+        <Tabs active={channel||'all'} onChange={v => { setChannel(v==='all'?'':v); setOffset(0) }}
+          tabs={[{ id:'all', label:'All' }, { id:'ai', label:'🤖 AI Calls' }, { id:'human', label:'🧑‍💼 Human Calls' }]} />
       </div>
 
       {/* Direction tabs + count */}
@@ -67,7 +74,10 @@ export default function CallsPage() {
               color: c.direction==='inbound' ? '#4da6ff' : '#a594ff' }}>
               {c.direction==='inbound'?'↙':'↗'}
             </div>
-            <div className={styles.numberCell}>{c.direction==='inbound'?c.from_number:c.to_number}</div>
+            <div className={styles.numberCell}>
+              {c.direction==='inbound'?c.from_number:c.to_number}
+              <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.6 }}>{c.channel === 'human' ? '🧑‍💼' : '🤖'}</span>
+            </div>
             <div className={styles.durationCell}>{fmt(c.duration_seconds||0)}</div>
             <div className={styles.statusCell} style={{ color: c.status==='completed'?'#3ecf8e': c.status==='failed'?'#f25757':'#5a5d70' }}>{c.status}</div>
             <div className={styles.moodCell}>{c.sentiment==='positive'?'😊':c.sentiment==='negative'?'😟':c.sentiment==='neutral'?'😐':'—'}</div>
@@ -98,8 +108,14 @@ export default function CallsPage() {
             </div>
             {detail.summary && (
               <div className={styles.summaryBox}>
-                <div className={styles.summaryBoxLabel}>AI Summary</div>
+                <div className={styles.summaryBoxLabel}>{detail.channel === 'human' ? 'Agent Summary' : 'AI Summary'}</div>
                 <p className={styles.summaryBoxText}>{detail.summary}</p>
+              </div>
+            )}
+            {detail.channel === 'human' && detail.transcript && (
+              <div className={styles.summaryBox}>
+                <div className={styles.summaryBoxLabel}>Notes</div>
+                <p className={styles.summaryBoxText}>{detail.transcript}</p>
               </div>
             )}
             {(detail.conversation_history||[]).length > 0 && (

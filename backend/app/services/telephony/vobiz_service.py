@@ -155,6 +155,7 @@ class VobizService:
         lead_id: Optional[str] = None,
         call_mode: str = "sales",
         company: Any = None,
+        product_focus: Optional[str] = None,
     ) -> Optional[str]:
         creds = self._creds(company)
         if not creds["auth_id"] or not creds["auth_token"]:
@@ -165,6 +166,7 @@ class VobizService:
             return None
 
         from app.core.config import settings
+        from urllib.parse import quote
 
         # USE_STREAMING_CALLS gates which flow handles the call:
         #   True  (default) -> /vobiz-stream/answer-stream -> the Pipecat
@@ -181,6 +183,7 @@ class VobizService:
         answer_url = (
             f"{_get_base_url()}{answer_path}"
             f"?company_id={company_id}&lead_id={lead_id or ''}&mode={call_mode}"
+            f"&product_focus={quote(product_focus or '')}"
         )
         hangup_url = (
             f"{_get_base_url()}/api/v1/vobiz/hangup"

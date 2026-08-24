@@ -66,15 +66,15 @@ def run_async(coro):
 # ── Call Tasks ────────────────────────────────────────────────────────────────
 
 @celery_app.task(name="app.tasks.call_tasks.run_outbound_call")
-def run_outbound_call(lead_id: str, company_id: str, call_mode: str = "sales", provider: str = "vobiz"):
+def run_outbound_call(lead_id: str, company_id: str, call_mode: str = "sales", provider: str = "vobiz", product_focus: Optional[str] = None):
     try:
-        return run_async(_async_outbound_call(lead_id, company_id, call_mode, provider))
+        return run_async(_async_outbound_call(lead_id, company_id, call_mode, provider, product_focus))
     except Exception as exc:
         logger.error(f"Outbound call task failed: {exc}")
         raise self.retry(exc=exc, countdown=120)
 
 
-async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, provider: str = "vobiz"):
+async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, provider: str = "vobiz", product_focus: Optional[str] = None):
     from app.core.database import AsyncSessionLocal
     from app.models.models import Lead, Company, BatchLead, CallLog
     from sqlalchemy import select
@@ -90,20 +90,16 @@ async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, pr
         if not lead.phone:
             return {"skipped": "no phone number"}
 
-        # ── License gate: block call if the activation key isn't valid ─────────
-        # Replaces the old Firestore minutes-remaining plan gate now that
-        # billing is a one-time activation key instead of monthly minutes.
-        try:
-            from app.services import license_service
-            allowed, reason = await license_service.is_call_allowed(company)
-            if not allowed:
-                logger.warning(f"Call BLOCKED — {reason} | company={company_id}")
-                return {"skipped": reason}
-        except Exception as e:
-            # If the license server is unreachable, log but allow the call
-            # through — same fail-open philosophy as the old plan gate, so a
-            # network blip doesn't halt a live campaign.
-            logger.warning(f"License gate check failed (allowing call): {e}")
+        # ── Plan gate: block call if this company is out of minutes / expired ──
+        # Replaces the old license-activation-key gate. Purely local DB state
+        # now (no external service call), so — per confirmed product
+        # behavior — this fails CLOSED, not open: zero minutes or an
+        # expired plan blocks the call immediately, no exceptions.
+        from app.services import plan_service
+        if not plan_service.has_minutes_available(company):
+            reason = "plan expired" if plan_service.is_plan_expired(company) else "out of minutes"
+            logger.warning(f"Call BLOCKED — {reason} | company={company_id}")
+            return {"skipped": reason}
 
         # ── Demo account gate: block + decrement the shared counter ────────────
         # Real customer accounts have is_demo_account=False and are never
@@ -135,6 +131,7 @@ async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, pr
             lead_id=lead_id,
             call_mode=call_mode,
             company=company,
+            product_focus=product_focus or company.active_product,
         )
 
         if call_control_id:
@@ -198,32 +195,14 @@ async def _async_outbound_call(lead_id: str, company_id: str, call_mode: str, pr
 # retry_failed_calls_task removed — was bypassing plan gate and batch system
 
 
-# ── License Tasks ─────────────────────────────────────────────────────────────
-
-@celery_app.task(name="app.tasks.license_tasks.revalidate_all_licenses")
-def revalidate_all_licenses():
-    return run_async(_async_revalidate_all_licenses())
-
-
-async def _async_revalidate_all_licenses():
-    from app.core.database import AsyncSessionLocal
-    from app.models.models import Company
-    from app.services import license_service
-    from sqlalchemy import select
-
-    checked = 0
-    async with AsyncSessionLocal() as db:
-        r = await db.execute(select(Company).where(Company.license_key.isnot(None)))
-        companies = r.scalars().all()
-        for company in companies:
-            try:
-                await license_service.refresh_status(company)
-                checked += 1
-            except Exception as e:
-                logger.warning(f"License revalidation failed | company={company.id} | {e}")
-
-    logger.info(f"revalidate_all_licenses done | checked={checked}")
-    return {"checked": checked}
+# ── License Tasks — REMOVED ────────────────────────────────────────────────
+# revalidate_all_licenses() used to re-check every activated company's
+# license against the license table on a schedule. The yearly license
+# system is gone (see app/services/plan_service.py) — there's nothing
+# external to revalidate; minute balances are plain DB columns, checked
+# synchronously wherever a call is about to be placed. If you still see
+# a beat-schedule entry named "app.tasks.license_tasks.revalidate_all_licenses"
+# in app/core/celery_app.py, remove it too — it now points at nothing.
 
 
 # ── Schedule Tasks ────────────────────────────────────────────────────────────
@@ -295,8 +274,12 @@ async def _async_check_schedules():
                 skipped += 1
                 continue
 
-            logger.info(f"Dispatching schedule {schedule.id} (batch={batch.name}, type={batch.batch_type})")
-            if batch.batch_type == "voice":
+            logger.info(f"Dispatching schedule {schedule.id} (batch={batch.name}, type={batch.batch_type}, agent_type={batch.agent_type})")
+            # agent_type="human" batches are NEVER auto-dialed — those leads
+            # are worked manually from the Human Call tab (agent dials via
+            # the Vobiz WebRTC softphone). Only "ai" batches go through the
+            # automated dispatch pipeline below.
+            if batch.batch_type == "voice" and batch.agent_type != "human":
                 _dispatch_voice_batch.delay(batch.id, schedule.id)
 
             dispatched += 1
@@ -400,7 +383,7 @@ async def _async_voice_batch(batch_id: str, schedule_id: str):
 
         # Dispatch — no countdown, fire immediately (cooldown already checked above)
         run_outbound_call.apply_async(
-            args=[lead.id, batch.company_id, batch.call_mode or "sales", batch.provider or "vobiz"],
+            args=[lead.id, batch.company_id, batch.call_mode or "sales", batch.provider or "vobiz", batch.product_focus or None],
         )
         logger.info(
             f"_dispatch_voice_batch | batch={batch.name} | "

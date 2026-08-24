@@ -8,7 +8,7 @@ import logging
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user
-from app.models.models import Batch, BatchLead, Company, Lead
+from app.models.models import Batch, BatchLead, Company, Lead, Schedule
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -30,6 +30,10 @@ class BatchCreate(BaseModel):
     batch_type: str                       # voice | email
     call_mode: str = "sales"             # sales | support
     provider: str = "vobiz"               # vobiz — sole carrier dispatching this batch
+    # ai = existing fully-automated flow. human = leads land in the Human
+    # Call tab instead of being auto-dialed — see app/api/routes/human_calls.py
+    # and Batch.agent_type in models.py. Only meaningful for batch_type="voice".
+    agent_type: str = "ai"
     filter_criteria: FilterCriteria
     campaign_name: Optional[str] = None
     product_focus: Optional[str] = None
@@ -41,6 +45,7 @@ def _dict(b: Batch) -> dict:
     return {
         "id": b.id, "name": b.name, "description": b.description,
         "batch_type": b.batch_type, "call_mode": b.call_mode, "provider": b.provider,
+        "agent_type": b.agent_type,
         "status": b.status, "lead_count": b.lead_count,
         "leads_processed": b.leads_processed, "leads_succeeded": b.leads_succeeded,
         "leads_failed": b.leads_failed, "campaign_name": b.campaign_name,
@@ -139,6 +144,7 @@ async def create_batch(
         company_id=company.id,
         name=data.name, description=data.description,
         batch_type=data.batch_type, call_mode=data.call_mode, provider=data.provider,
+        agent_type=data.agent_type,
         filter_criteria=data.filter_criteria.model_dump(),
         lead_count=len(leads),
         campaign_name=data.campaign_name,
@@ -155,6 +161,55 @@ async def create_batch(
 
     await db.commit()
     return {**_dict(batch), "lead_count": len(leads)}
+
+
+@router.post("/{batch_id}/reuse")
+async def reuse_batch(
+    batch_id: str,
+    current_user=Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clones a completed (or any) batch's settings into a brand-new
+    "draft" batch — same name (with a suffix), filter criteria, product
+    focus, agent_type, etc. Deliberately RE-RUNS the original
+    filter_criteria against CURRENT leads rather than copying the old
+    batch's BatchLead rows verbatim: a lead's status may have changed
+    since (e.g. now do_not_call, or closed_won), and new leads matching
+    the same filter may have been added since — a "reuse" should pick up
+    a fresh, currently-accurate audience, not replay a stale snapshot."""
+    company = await _company(current_user.id, db)
+    r = await db.execute(select(Batch).where(Batch.id == batch_id, Batch.company_id == company.id))
+    old = r.scalar_one_or_none()
+    if not old:
+        raise HTTPException(404, "Batch not found")
+
+    f = FilterCriteria(**(old.filter_criteria or {}))
+    leads = await _select_leads(company.id, f, db)
+    if not leads:
+        raise HTTPException(400, "No leads currently match this batch's filter criteria — nothing to reuse.")
+
+    new_batch = Batch(
+        company_id=company.id,
+        name=f"{old.name} (reused)",
+        description=old.description,
+        batch_type=old.batch_type, call_mode=old.call_mode, provider=old.provider,
+        agent_type=old.agent_type,
+        filter_criteria=old.filter_criteria,
+        lead_count=len(leads),
+        campaign_name=old.campaign_name,
+        product_focus=old.product_focus,
+        email_subject_template=old.email_subject_template,
+        email_body_template=old.email_body_template,
+        status="draft",
+    )
+    db.add(new_batch)
+    await db.flush()
+
+    for lead in leads:
+        db.add(BatchLead(batch_id=new_batch.id, lead_id=lead.id))
+
+    await db.commit()
+    return {**_dict(new_batch), "lead_count": len(leads)}
 
 
 @router.get("/")
@@ -241,7 +296,16 @@ async def delete_batch(
         logger.info(f"Force-deleting {batch.status} batch {batch_id} — clearing Redis lock")
         _clear_batch_redis_lock(batch_id)
 
-    # Delete child BatchLead rows first — SQLite has no ON DELETE CASCADE by default.
+    # Delete child rows first — SQLite has no ON DELETE CASCADE by default,
+    # and neither Batch.schedules nor Batch.batch_leads has an explicit
+    # cascade="all, delete-orphan" set, so SQLAlchemy's default behavior
+    # on deleting the parent is to try to NULL each child's batch_id
+    # instead of deleting the child. That's silently fine for
+    # EmailLog.batch_id (nullable=True) but hard-crashes for
+    # Schedule.batch_id, which is nullable=False — this is exactly what
+    # was happening: deleting any batch that had a schedule attached
+    # threw "NOT NULL constraint failed: schedules.batch_id".
+    await db.execute(delete(Schedule).where(Schedule.batch_id == batch_id))
     await db.execute(delete(BatchLead).where(BatchLead.batch_id == batch_id))
     await db.delete(batch)
     await db.commit()

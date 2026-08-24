@@ -56,18 +56,28 @@ async def get_db():
 
 
 async def create_tables():
+    """Create local tables and apply the small additive schema used by the
+    current AI appointments/structured-knowledge flow. Existing production
+    databases are not rebuilt; only the new column/table are added.
+
+    This is intentionally additive and idempotent so an existing Neon/
+    Postgres deployment can boot the new application before a formal
+    migration pipeline is added.
     """
-    Dev convenience only. Schema is managed by Alembic migrations now
-    (see alembic/versions/) — this function no longer runs against
-    Postgres at all. It still runs create_all() for local SQLite dev so
-    `python -m app.main` works out of the box without needing to run
-    migrations first; set AUTO_CREATE_TABLES_SQLITE_ONLY=false in .env to
-    disable even that. Production (Postgres/Neon) always uses
-    `alembic upgrade head` instead — see Dockerfile / DEPLOYMENT.md.
-    """
-    if not _is_sqlite:
-        return
-    if not settings.AUTO_CREATE_TABLES_SQLITE_ONLY:
-        return
+    from sqlalchemy import text
+    from app.models.models import Appointment
+
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+        if _is_sqlite:
+            if settings.AUTO_CREATE_TABLES_SQLITE_ONLY:
+                await conn.run_sync(Base.metadata.create_all)
+            else:
+                # Still ensure the new appointment table exists when an
+                # existing local DB has disabled full create_all.
+                await conn.run_sync(lambda sync_conn: Appointment.__table__.create(sync_conn, checkfirst=True))
+        else:
+            # PostgreSQL/Neon: additive, idempotent schema changes only.
+            await conn.execute(text(
+                "ALTER TABLE companies ADD COLUMN IF NOT EXISTS business_knowledge JSONB DEFAULT '{}'::jsonb"
+            ))
+            await conn.run_sync(lambda sync_conn: Appointment.__table__.create(sync_conn, checkfirst=True))
