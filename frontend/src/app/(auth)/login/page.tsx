@@ -70,7 +70,7 @@ export default function LoginPage() {
           </form>
 
           <p className={styles.hint}>
-            Don't have login details? Contact whoever set up this deployment for you.
+            for help and support email support@astric.business.
           </p>
           <p className={styles.hint}>
             New here? <Link href="/register">Create an account</Link>
@@ -78,7 +78,9 @@ export default function LoginPage() {
         </div>
 
         <p className={styles.footer}>
-          New Age Tech
+        <h2>New Age Tech</h2>   <a href="./../public/manual.html" style 
+        target="_blank" rel="noopener noreferrer">User Manual</a>
+
         </p>
       </div>
 
