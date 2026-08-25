@@ -261,7 +261,7 @@ export default function SettingsPage() {
             <h3>Manual site visits</h3><p className={styles.helperText}>The AI only records a site-visit/meeting request in the lead notes. Admin opens Appointments → + Schedule Manually and chooses the real date, time, product and location.</p>
             <h3>Support</h3><p className={styles.helperText}>For any inconvenience or technical issue, email <strong>support@astric.business</strong>.</p>
             </> : <>
-            <a href="./public/manual.html" style={{ textDecoration: 'none' }} target="_blank" rel="noopener noreferrer" className={styles.manualLink}>📖 View the full user manual</a>
+            <a href="./manual.html" style={{ textDecoration: 'none' }} target="_blank" rel="noopener noreferrer" className={styles.manualLink}>📖 View the full user manual</a>
               <h3>Privacy Policy</h3><p className={styles.helperText}>We use account, lead, call and configuration data to provide the calling service, maintain call logs and operate customer-requested automations. Do not store unnecessary sensitive information in lead notes. You can contact support@astric.business for privacy questions or requests.</p>
               <h3>Data minimization</h3><p className={styles.helperText}>Only enter customer information necessary for your sales/support workflow. The AI receives compact lead memory, the assigned product and only relevant FAQ facts during live calls; full call transcripts are retained for call logs and post-call analysis.</p>
             </>}

@@ -78,7 +78,7 @@ export default function LoginPage() {
         </div>
 
         <p className={styles.footer}>
-        <h2>New Age Tech</h2>   <a href="./../public/manual.html" style={{ textDecoration: 'none' }}
+        <h2>New Age Tech</h2>   <a href="/manual.html" style={{ textDecoration: 'none' }}
         target="_blank" rel="noopener noreferrer">User Manual</a>
 
         </p>
