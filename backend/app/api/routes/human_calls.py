@@ -24,10 +24,12 @@
 # for that once confirmed; nothing else in the Human Call flow depends on
 # which transport actually carries the audio.
 import logging
+import re
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select, and_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +40,7 @@ from app.core.security import get_current_active_user
 from app.models.models import Batch, BatchLead, CallLog, Company, Lead
 from app.services import plan_service
 from app.services.telephony.vobiz_service import _get_base_url
+from app.utils.phone import INDIA_PREFIX
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/human-calls", tags=["human-calls"])
@@ -134,6 +137,22 @@ async def dial(
     if not company.vobiz_auth_id or not company.vobiz_auth_token or not company.vobiz_phone_number:
         raise HTTPException(400, "Vobiz isn't configured for this company yet — set it up in Settings first.")
 
+    # BUG FIX: Vobiz needs an E.164-style number (country code included) to
+    # actually place a call — every other number in this system already
+    # comes in that shape (lead.phone is normalized to "+91..." on import,
+    # see leads.py; company.vobiz_phone_number is stored as E.164 too, see
+    # models.py). This endpoint was passing the agent's phone straight
+    # through as whatever bare digits the frontend collected (a 10-digit
+    # Indian mobile, no "+91"). Vobiz's Call-creation API still accepts
+    # that request and returns a call_uuid — it doesn't reject it outright
+    # — it just never actually rings an unqualified number, so nothing
+    # ever throws and nothing ever gets logged as an error; the agent's
+    # phone simply stays silent. Normalize it the same way here.
+    agent_digits = re.sub(r"\D", "", data.agent_phone)
+    if len(agent_digits) != 10:
+        raise HTTPException(400, "Enter a valid 10-digit agent phone number")
+    agent_phone_e164 = f"{INDIA_PREFIX}{agent_digits}"
+
     call_log = CallLog(
         company_id=company.id,
         lead_id=lead.id,
@@ -152,8 +171,22 @@ async def dial(
     await db.refresh(call_log)
 
     answer_url = (
+        # BUG FIX: lead.phone is E.164 ("+919140971036") and was being
+        # dropped straight into the query string unescaped. A literal "+"
+        # in a URL query string is the standard encoding for a space —
+        # Vobiz's own outbound request round-trips it fine (the "+" you
+        # see in this file's log line is just the raw request line), but
+        # when Vobiz calls this URL back on bridge-answer, FastAPI/
+        # Starlette's query-string parser decodes that raw "+" into a
+        # space, so `lead_phone` arrives here as " 919140971036" — no
+        # "+", a leading space instead. The <Dial><Number> then tries to
+        # ring that mangled, invalid number, the second leg never
+        # connects, and Vobiz drops the whole bridge a couple seconds
+        # after the agent picks up — exactly the "connects then hangs up
+        # in 2-3s" symptom. quote(..., safe='') percent-encodes the "+"
+        # to "%2B", which decodes back to a literal "+" correctly.
         f"{_get_base_url()}/api/v1/human-calls/bridge-answer"
-        f"?call_log_id={call_log.id}&lead_phone={lead.phone}"
+        f"?call_log_id={call_log.id}&lead_phone={quote(lead.phone, safe='')}"
     )
     hangup_url = f"{_get_base_url()}/api/v1/human-calls/bridge-hangup?call_log_id={call_log.id}"
 
@@ -175,7 +208,7 @@ async def dial(
                 f"/Account/{company.vobiz_auth_id}/Call/",
                 json={
                     "from": company.vobiz_phone_number,
-                    "to": data.agent_phone,
+                    "to": agent_phone_e164,
                     "answer_url": answer_url,
                     "answer_method": "POST",
                     "hangup_url": hangup_url,
@@ -230,14 +263,31 @@ async def bridge_answer(call_log_id: str, lead_phone: str):
     "You must nest a Number or User element within the Dial element").
     Vobiz received that malformed instruction, couldn't execute it, and
     hung up almost immediately — this is what was causing the call to
-    drop 1-2 seconds after the agent answered."""
+    drop 1-2 seconds after the agent answered.
+
+    BUG FIX 2 (Aug 2026): the docstring above always claimed this uses
+    "the same caller ID the company already dials out with", but the XML
+    never actually set one — <Dial> had no `callerId` attribute. Without
+    an explicit, registered caller ID, Vobiz/Indian-carrier DLT rules
+    commonly reject or immediately drop an outbound leg with no caller ID
+    attached. That's why the bridge could connect (agent answers, this
+    endpoint returns 200) and then hang up again within a couple of
+    seconds the moment Vobiz tried to actually Dial the lead — the second
+    leg never went through. Explicitly setting callerId to the company's
+    own registered Vobiz number (the same one already used as `from` on
+    the original outbound leg) fixes that."""
     async with AsyncSessionLocal() as db:
         call_log = await db.get(CallLog, call_log_id)
+        caller_id = None
         if call_log:
             call_log.status = "in_progress"
+            company = await db.get(Company, call_log.company_id)
+            if company:
+                caller_id = company.vobiz_phone_number
             await db.commit()
 
-    xml = f'<Response><Dial><Number>{lead_phone}</Number></Dial></Response>'
+    caller_id_attr = f' callerId="{caller_id}"' if caller_id else ''
+    xml = f'<Response><Dial{caller_id_attr}><Number>{lead_phone}</Number></Dial></Response>'
     return Response(content=xml, media_type="text/xml")
 
 
@@ -245,7 +295,22 @@ async def bridge_answer(call_log_id: str, lead_phone: str):
 # POST /human-calls/bridge-hangup — Vobiz hangup webhook, records duration
 # ─────────────────────────────────────────────────────────────────────────────
 @router.post("/bridge-hangup")
-async def bridge_hangup(call_log_id: str):
+async def bridge_hangup(call_log_id: str, request: Request):
+    # DIAGNOSTIC (Aug 2026): log whatever Vobiz sends on hangup — Plivo-
+    # compatible providers typically include a cause code/reason (e.g.
+    # HangupCause, HangupCauseName, CallStatus) in the POST body. This
+    # endpoint never looked at it before, so every hangup — expected or a
+    # failed bridge — logged identically as a bare 200 OK with no way to
+    # tell why a call actually ended. Logging it here costs nothing and
+    # means the NEXT log capture will show the real reason if a call still
+    # drops early after the callerId fix above.
+    try:
+        form = await request.form()
+        if form:
+            logger.info(f"Human call bridge-hangup | call_log_id={call_log_id} | payload={dict(form)}")
+    except Exception:
+        pass
+
     async with AsyncSessionLocal() as db:
         call_log = await db.get(CallLog, call_log_id)
         if not call_log:

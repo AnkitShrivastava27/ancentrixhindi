@@ -60,10 +60,13 @@ export default function PricingPage() {
     fetchBalance()
   }, [])
 
-  useEffect(() => {
-    // Already fully paid up — nothing to do here.
-    if (balance?.can_place_calls) router.replace('/dashboard')
-  }, [balance, router])
+  // NOTE: there used to be a `useEffect` here that force-redirected to
+  // /dashboard whenever `balance.can_place_calls` was true. That's exactly
+  // the state of a company with an active plan trying to TOP UP ("Buy More
+  // Minutes" on the Billing page routes here) — so it was bouncing anyone
+  // who already had minutes straight back to the dashboard before they
+  // could pick a plan or reach Cashfree checkout. Removed; this page has
+  // no reason to refuse an already-active company a top-up.
 
   useEffect(() => {
     paymentsApi.listPlans()

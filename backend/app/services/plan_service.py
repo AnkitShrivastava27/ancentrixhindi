@@ -92,14 +92,42 @@ def apply_paid_plan(company: Any, priced: dict) -> None:
     Caller (the Cashfree webhook handler) is responsible for committing
     the session. Does NOT touch PaymentOrder — that's the caller's job
     too, so this function stays a pure "what does a paid plan do to a
-    Company" function, testable without a DB order row at all."""
+    Company" function, testable without a DB order row at all.
+
+    TOP-UP BEHAVIOR: if the company still has an active (non-expired) plan
+    when a new one is paid for, the newly bought minutes are ADDED to
+    whatever is left rather than replacing it — this is the "Buy More
+    Minutes" flow on the Billing page, and it should never discard minutes
+    the company already paid for. Only a company with no plan yet, or
+    whose plan has already expired (its old minutes are void anyway per
+    has_minutes_available()), gets a fresh plan_minutes_used=0 start."""
+    now = datetime.utcnow()
+    topping_up = (
+        company.plan_type
+        and company.plan_type != "none"
+        and company.plan_expires_at is not None
+        and not is_plan_expired(company)
+    )
+
+    if topping_up:
+        company.plan_minutes_total = round((company.plan_minutes_total or 0) + priced["minutes"])
+        company.plan_amount_paid = round((company.plan_amount_paid or 0.0) + priced["amount"], 2)
+        # Extend validity — never shorten it if the existing plan already
+        # runs further out than a fresh 365-day window would.
+        new_expiry = now + timedelta(days=settings.PLAN_EXPIRY_DAYS)
+        if not company.plan_expires_at or new_expiry > company.plan_expires_at:
+            company.plan_expires_at = new_expiry
+        # plan_minutes_used is intentionally left untouched — that's the
+        # whole point of a top-up.
+    else:
+        company.plan_minutes_total = round(priced["minutes"])
+        company.plan_amount_paid = priced["amount"]
+        company.plan_expires_at = now + timedelta(days=settings.PLAN_EXPIRY_DAYS)
+        company.plan_minutes_used = 0.0   # fresh plan — nothing to carry over
+
     company.plan_type = priced["plan_type"]
-    company.plan_minutes_total = round(priced["minutes"])
     company.plan_rate_per_minute = priced["rate_per_minute"]
-    company.plan_amount_paid = priced["amount"]
-    company.plan_purchased_at = datetime.utcnow()
-    company.plan_expires_at = datetime.utcnow() + timedelta(days=settings.PLAN_EXPIRY_DAYS)
-    company.plan_minutes_used = 0.0   # does NOT carry over from a previous plan — confirmed behavior
+    company.plan_purchased_at = now
     if priced["plan_type"] == "trial":
         company.trial_used = True
 
