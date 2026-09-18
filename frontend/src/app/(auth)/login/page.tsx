@@ -35,7 +35,7 @@ export default function LoginPage() {
         {/* Logo */}
         <div className={styles.logoWrap}>
           <div className={styles.logoMark}>AV</div>
-          <h1 className={styles.title}>Ancentrix Voice</h1>
+          <h1 className={styles.title}>Astric Voice</h1>
           <p className={styles.subtitle}>Automated sales & support</p>
         </div>
 

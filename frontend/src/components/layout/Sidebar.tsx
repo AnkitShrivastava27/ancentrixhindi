@@ -42,7 +42,7 @@ export default function Sidebar() {
         <div className={styles.logoRow}>
           <div className={styles.logoMark}>Av</div>
           <div>
-            <div className={styles.brandName}>Ancentrix Voice</div>
+            <div className={styles.brandName}>Astric Voice</div>
             <div className={styles.brandSub}>AI Sales Agent</div>
           </div>
         </div>

@@ -4,7 +4,7 @@ import './globals.css'
 import { Toaster } from 'react-hot-toast'
 
 export const metadata: Metadata = {
-  title: 'Ancentrix voice',
+  title: 'Astric Voice',
   description: 'AI-powered sales and support call center',
 }
 
